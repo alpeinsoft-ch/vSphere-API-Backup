@@ -1,0 +1,17 @@
+Inventory:
+python3 inventory_discovery.py --show-all
+
+Preflight:
+python3 backup_vsphere.py preflight
+
+Backup geschuetzte Ziel-VM:
+python3 backup_vsphere.py backup --confirm-vm '<VSPHERE_TARGET_VM>'
+
+Interaktive VM-Auswahl:
+./start_select_vm_backup.sh
+
+Auswahldatei erzeugen:
+./start_vm_liste.sh
+
+Restore:
+./start_restore_vm_backup.sh

@@ -1,0 +1,47 @@
+Schrittprotokoll vSphere-API-Bakup
+
+1. Zielordner erstellt:
+   /srv/shares/Backup-f/Backup-system/vSphere-API-Bakup
+
+2. Vorlage kopiert:
+   Quelle: docsign_esxi_api_backup
+   Uebernommen: Python-Code, Shell-Starter, Tests, Dokumentation.
+   Ausgelassen: backups, logs, __pycache__, .venv, alte config.env.
+
+3. Dateien umgestellt:
+   - safe_esxi_backup.py -> safe_vsphere_backup.py
+   - backup_docsign.py -> backup_vsphere.py
+
+4. vSphere-Konfiguration eingefuehrt:
+   - credentials.env
+   - credentials.example.env
+   - config.example.env
+   - VSPHERE_SERVER, VSPHERE_USER, VSPHERE_PASSWORD
+   - VSPHERE_TARGET_VM
+
+5. API-Ansteuerung angepasst:
+   - REST-Login ueber /api/session.
+   - REST-Inventory ueber /api/vcenter/vm.
+   - Fallbacks fuer /rest/com/vmware/cis/session und /rest/vcenter/vm.
+   - Managed-Object API fuer Snapshot, Export, HttpNfcLease, Datastore und
+     Restore beibehalten.
+
+6. Starter korrigiert:
+   - Standard-Config ist credentials.env.
+   - VSPHERE_CONFIG kann einen anderen Pfad setzen.
+   - Alte harte Pfade wurden entfernt.
+
+7. Dokumentation neu geschrieben:
+   - README.md
+   - RUNBOOK.md
+   - ANALYSE_UND_KONZEPT.md
+   - BACKUP_SYSTEM_ANALYSE_2026-06-29.txt
+
+8. Lokale Pruefung:
+   - python3 -m py_compile *.py tests/test_safety.py
+   - python3 -m unittest discover -s tests -v
+
+9. Ergebnis:
+   - Python-Kompilierung erfolgreich.
+   - Historischer Stand dieses Protokolls: 58 Unit-Tests erfolgreich.
+   - Aktueller validierter Stand siehe docs/ANALYSE_UND_ANLEITUNG.md.
