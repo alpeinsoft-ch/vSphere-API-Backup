@@ -3,7 +3,8 @@
 ## 1. Zugangsdaten eintragen
 
 ```bash
-cd /srv/shares/Backup-f/Backup-system/vSphere-API-Bakup
+cd /pfad/zum/vsphere-api-backup
+cp credentials.example.env credentials.env
 chmod 600 credentials.env
 nano credentials.env
 ```
@@ -15,6 +16,7 @@ VSPHERE_SERVER=<vcenter-host-oder-url>
 VSPHERE_USER=<backup-user>
 VSPHERE_PASSWORD=<passwort>
 VSPHERE_TARGET_VM=<ziel-vm-fuer-den-geschuetzten-pfad>
+BACKUP_OUTPUT_DIR=./backups
 ```
 
 ## 2. Abhaengigkeiten vorbereiten
@@ -24,6 +26,10 @@ python3 -m venv .venv
 . .venv/bin/activate
 pip install -r requirements.txt
 ```
+
+Falls `python3 -m venv .venv` auf Debian/Ubuntu wegen fehlendem `ensurepip`
+abbricht, muss vorher `python3-venv` bzw. das zur Python-Version passende
+venv-Paket installiert werden.
 
 Die Starter-Skripte legen die venv bei Bedarf selbst an.
 

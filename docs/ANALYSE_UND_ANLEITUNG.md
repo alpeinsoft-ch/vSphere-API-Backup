@@ -180,7 +180,7 @@ VSPHERE_PORT=443
 VSPHERE_USER=backup-user@example.local
 VSPHERE_PASSWORD=CHANGE_ME
 VSPHERE_TARGET_VM=CHANGE_ME_VM_NAME
-BACKUP_OUTPUT_DIR=/srv/shares/Backup-f/Backup-system/vSphere-API-Bakup/backups
+BACKUP_OUTPUT_DIR=./backups
 ```
 
 Empfehlungen:
@@ -224,6 +224,10 @@ python3 -m venv .venv
 . .venv/bin/activate
 pip install -r requirements.txt
 ```
+
+Falls `python3 -m venv .venv` auf Debian/Ubuntu wegen fehlendem `ensurepip`
+abbricht, muss vorher `python3-venv` bzw. das zur Python-Version passende
+venv-Paket installiert werden.
 
 Inventory:
 
@@ -379,6 +383,7 @@ Nach dem Clone auf einem anderen System:
 ```bash
 git clone https://git.hostwerk.ch/AlpeinSW/vsphere-api-backup.git
 cd vsphere-api-backup
+# Debian/Ubuntu minimal: bei fehlendem ensurepip vorher python3-venv installieren.
 python3 -m venv .venv
 . .venv/bin/activate
 pip install -r requirements.txt

@@ -38,12 +38,18 @@ Offizielle Referenz: Broadcom Developer Portal, vSphere Automation API.
 ## Einrichtung
 
 ```bash
-cd /srv/shares/Backup-f/Backup-system/vSphere-API-Bakup
+git clone https://git.hostwerk.ch/AlpeinSW/vsphere-api-backup.git
+cd vsphere-api-backup
 python3 -m venv .venv
 . .venv/bin/activate
 pip install -r requirements.txt
+cp credentials.example.env credentials.env
 chmod 600 credentials.env
 ```
+
+Falls `python3 -m venv .venv` auf Debian/Ubuntu mit `ensurepip is not
+available` abbricht, fehlt das Paket `python3-venv` bzw. passend zur
+Python-Version z. B. `python3.12-venv`.
 
 Danach `credentials.env` bearbeiten:
 
@@ -52,7 +58,7 @@ VSPHERE_SERVER=vcsa.example.local
 VSPHERE_USER=backup-user@example.local
 VSPHERE_PASSWORD=CHANGE_ME
 VSPHERE_TARGET_VM=<geschuetzte-vm>
-BACKUP_OUTPUT_DIR=/srv/shares/Backup-f/Backup-system/vSphere-API-Bakup/backups
+BACKUP_OUTPUT_DIR=./backups
 ```
 
 `VSPHERE_SERVER` darf als Hostname, `host:port` oder `https://host:port`
