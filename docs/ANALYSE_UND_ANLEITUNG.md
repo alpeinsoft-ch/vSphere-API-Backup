@@ -25,7 +25,7 @@ Ergebnis am 2026-08-31: 69 Tests bestanden.
 Produktive Runtime-Daten gehoeren nicht ins GitLab-Repository:
 
 - `credentials.env`
-- `backups/`
+- `/srv/samba/Backup-Alpein/Backup/` (separates 5-TB-Backup-Dateisystem)
 - `logs/`
 - `vendor/vddk/`
 - VMware VDDK Archive
@@ -99,7 +99,7 @@ und Restore-Operationen keinen gleichwertigen reinen REST-Pfad bereitstellt.
 Ein Full Backup erzeugt einen vollstaendigen Wiederherstellungspunkt:
 
 ```text
-backups/<VM>/full_0001/
+/srv/samba/Backup-Alpein/Backup/<VM>/full_0001/
   backup_manifest.json
   *.ovf
   *.vmdk
@@ -120,11 +120,11 @@ lokalen Plattenplatz, reduziert aber nicht den initialen vSphere-Download.
 Typische Artefakte:
 
 ```text
-backups/<VM>/delta_0002/
+/srv/samba/Backup-Alpein/Backup/<VM>/delta_0002/
   backup_manifest.json
   delta_manifest.json
   README.txt
-backups/<VM>/.delta_store/
+/srv/samba/Backup-Alpein/Backup/<VM>/.delta_store/
   chunks/...
 ```
 
@@ -137,7 +137,7 @@ als Patch-Dateien gespeichert.
 Typische Artefakte:
 
 ```text
-backups/<VM>/delta_0003/
+/srv/samba/Backup-Alpein/Backup/<VM>/delta_0003/
   backup_manifest.json
   cbt_manifest.json
   *.cbtpatch
@@ -180,7 +180,7 @@ VSPHERE_PORT=443
 VSPHERE_USER=backup-user@example.local
 VSPHERE_PASSWORD=CHANGE_ME
 VSPHERE_TARGET_VM=CHANGE_ME_VM_NAME
-BACKUP_OUTPUT_DIR=./backups
+BACKUP_OUTPUT_DIR=/srv/samba/Backup-Alpein/Backup
 ```
 
 Empfehlungen:
@@ -276,13 +276,13 @@ Optional mit Screen:
 Ein einzelner Wiederherstellungspunkt kann geprueft werden:
 
 ```bash
-python3 backup_vsphere.py verify backups/<VM>/<lauf>
+python3 backup_vsphere.py verify /srv/samba/Backup-Alpein/Backup/<VM>/<lauf>
 ```
 
 Oder ueber den Auswahl-Wrapper:
 
 ```bash
-./start_select_vm_backup.sh --verify backups/<VM>/<lauf>
+./start_select_vm_backup.sh --verify /srv/samba/Backup-Alpein/Backup/<VM>/<lauf>
 ```
 
 Bei Delta-/CBT-Backups prueft Verify auch die jeweils benoetigten Metadaten und
@@ -296,11 +296,18 @@ Restore-Punkte anzeigen:
 ./start_restore_vm_backup.sh --list-backups
 ```
 
+Der normale Restore wird ausschließlich mit dem kurzen Aufruf gestartet. Die
+restlichen Angaben werden interaktiv abgefragt:
+
+```bash
+./start_restore_vm_backup.sh
+```
+
 Dry-Run:
 
 ```bash
 ./start_restore_vm_backup.sh \
-  --backup-dir backups/<VM>/<lauf> \
+  --backup-dir /srv/samba/Backup-Alpein/Backup/<VM>/<lauf> \
   --new-name <neuer-vm-name> \
   --dry-run
 ```
@@ -309,7 +316,7 @@ Restore:
 
 ```bash
 ./start_restore_vm_backup.sh \
-  --backup-dir backups/<VM>/<lauf> \
+  --backup-dir /srv/samba/Backup-Alpein/Backup/<VM>/<lauf> \
   --new-name <neuer-vm-name> \
   --yes
 ```

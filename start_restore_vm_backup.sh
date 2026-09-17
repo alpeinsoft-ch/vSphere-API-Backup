@@ -6,6 +6,7 @@ cd "$(dirname "$0")"
 PYTHON_BIN="python3"
 USING_VENV=0
 DEFAULT_CONFIG="${VSPHERE_CONFIG:-credentials.env}"
+BACKUP_ROOT="${BACKUP_OUTPUT_DIR:-/srv/samba/Backup-Alpein/Backup}"
 
 check_modules() {
   set +e
@@ -57,7 +58,7 @@ if ! check_modules; then
   echo "Fehlende Python-Module auf diesem Rechner: pyVmomi/requests" >&2
   echo "Empfohlen:" >&2
   echo "  sudo apt install python3-venv" >&2
-  echo "  ./start_restore_vm_backup.sh --backup-dir backups/<backup-ordner> --new-name RestoreTest --dry-run" >&2
+  echo "  ./start_restore_vm_backup.sh --backup-dir ${BACKUP_ROOT}/<VM>/<lauf> --new-name RestoreTest --dry-run" >&2
   echo "Alternative:" >&2
   echo "  python3 -m pip install --user -r requirements.txt" >&2
   exit 7
@@ -86,7 +87,7 @@ wants_help() {
 }
 
 latest_backup_dir() {
-  find backups -mindepth 2 -maxdepth 2 -type f -name backup_manifest.json -printf '%T@ %h\n' 2>/dev/null \
+  find "$BACKUP_ROOT" -mindepth 2 -maxdepth 2 -type f -name backup_manifest.json -printf '%T@ %h\n' 2>/dev/null \
     | sort -nr \
     | head -n 1 \
     | cut -d' ' -f2-
@@ -94,7 +95,8 @@ latest_backup_dir() {
 
 print_restore_usage_hint() {
   echo "Aufruf:" >&2
-  echo "  ./start_restore_vm_backup.sh --backup-dir backups/<backup-ordner> --new-name <neuer-vm-name> [--dry-run|--yes]" >&2
+  echo "  ./start_restore_vm_backup.sh" >&2
+  echo "  (Backup, Name und Restore-Optionen werden interaktiv abgefragt.)" >&2
   local latest
   latest="$(latest_backup_dir || true)"
   if [[ -n "$latest" ]]; then
@@ -114,6 +116,10 @@ if ! wants_help "${RESTORE_ARGS[@]}" \
       exit 2
     fi
   fi
+fi
+
+if [[ ${#RESTORE_ARGS[@]} -eq 0 && -t 0 ]]; then
+  RESTORE_ARGS=(--interactive)
 fi
 
 exec "$PYTHON_BIN" restore_vm_backup.py --config "$DEFAULT_CONFIG" "${RESTORE_ARGS[@]}"

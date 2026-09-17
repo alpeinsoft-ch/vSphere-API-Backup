@@ -1018,8 +1018,25 @@ def create_selected_cbt_backup(
         core.LOGGER.info("CBT backup directory prepared: %s", staging_dir)
 
         snapshot = None
+        vddk_connection = None
         snapshot_info: Dict[str, Any] = {"required": True}
         try:
+            # VDDK requires PrepareForAccess before the VM snapshot is made.
+            # Keep this access object alive until the VDDK snapshot connection
+            # has been disconnected and the temporary snapshot is removed.
+            vddk_status = core.vddk_backend_status()
+            if not vddk_status.get("available"):
+                raise core.SafetyError(str(vddk_status.get("detail") or "VDDK backend unavailable"))
+            vddk = vddk_cbt.get_vddk(str(vddk_status.get("library") or ""))
+            vddk_connection = vddk.prepare_remote(
+                host=config.host,
+                user=config.user,
+                password=config.password,
+                port=config.port,
+                vm_moref=str(vm_info["moref"]),
+                thumbprint=config.vddk_thumbprint,
+            )
+
             manifest["ovf_descriptor"] = core.write_ovf_descriptor(session, vm, staging_dir)
             snapshot, snapshot_info = core.create_temporary_snapshot(vm, config)
             manifest["snapshot"] = snapshot_info
@@ -1031,9 +1048,10 @@ def create_selected_cbt_backup(
             snapshot_moref = str(current_cbt.get("snapshot_moref") or snapshot_info.get("moref") or "")
             if not snapshot_moref:
                 raise core.SafetyError("Temporary snapshot has no MoRef for VDDK ConnectEx")
-            vddk_status = core.vddk_backend_status()
-            if not vddk_status.get("available"):
-                raise core.SafetyError(str(vddk_status.get("detail") or "VDDK backend unavailable"))
+            vddk_connection.connect_snapshot(
+                snapshot_moref,
+                transport_modes=vddk_cbt.DEFAULT_TRANSPORT_MODES,
+            )
 
             cbt_manifest: Dict[str, Any] = {
                 "format": vddk_cbt.CBT_FORMAT,
@@ -1052,73 +1070,65 @@ def create_selected_cbt_backup(
             files: List[Dict[str, Any]] = []
             total_changed = 0
             total_patch = 0
-            vddk = vddk_cbt.get_vddk(str(vddk_status.get("library") or ""))
-            with vddk.open_remote(
-                host=config.host,
-                user=config.user,
-                password=config.password,
-                port=config.port,
-                vm_moref=str(vm_info["moref"]),
-                snapshot_moref=snapshot_moref,
-            ) as connection:
-                for disk_index, disk in enumerate(current_cbt.get("disks", []) or [], start=1):
-                    disk_key = str(disk.get("key") or "")
-                    previous_disk = previous_disks.get(disk_key)
-                    if not previous_disk:
-                        raise core.SafetyError(f"No previous CBT baseline for disk key {disk_key}")
-                    previous_change_id = str(previous_disk.get("change_id") or "")
-                    current_change_id = str(disk.get("change_id") or "")
-                    capacity_bytes = int(disk.get("capacity_bytes") or 0)
-                    changed_areas = core.query_changed_disk_areas(
-                        vm=vm,
-                        snapshot=snapshot,
-                        disk_key=int(disk_key),
-                        previous_change_id=previous_change_id,
-                        capacity_bytes=capacity_bytes,
-                    )
-                    patch_name = f"disk-{disk_index}.cbtpatch"
-                    patch_result = vddk_cbt.read_changed_areas_to_patch(
-                        connection=connection,
-                        disk_path=str(disk.get("file_name") or ""),
-                        areas=changed_areas,
-                        patch_file=staging_dir / patch_name,
-                    )
-                    descriptor_name = f"cbt-disk{disk_index}.vmdk"
-                    extent_name = f"cbt-disk{disk_index}-flat.vmdk"
-                    disk_record = {
+            connection = vddk_connection
+            for disk_index, disk in enumerate(current_cbt.get("disks", []) or [], start=1):
+                disk_key = str(disk.get("key") or "")
+                previous_disk = previous_disks.get(disk_key)
+                if not previous_disk:
+                    raise core.SafetyError(f"No previous CBT baseline for disk key {disk_key}")
+                previous_change_id = str(previous_disk.get("change_id") or "")
+                current_change_id = str(disk.get("change_id") or "")
+                capacity_bytes = int(disk.get("capacity_bytes") or 0)
+                changed_areas = core.query_changed_disk_areas(
+                    vm=vm,
+                    snapshot=snapshot,
+                    disk_key=int(disk_key),
+                    previous_change_id=previous_change_id,
+                    capacity_bytes=capacity_bytes,
+                )
+                patch_name = f"disk-{disk_index}.cbtpatch"
+                patch_result = vddk_cbt.read_changed_areas_to_patch(
+                    connection=connection,
+                    disk_path=str(disk.get("file_name") or ""),
+                    areas=changed_areas,
+                    patch_file=staging_dir / patch_name,
+                )
+                descriptor_name = f"cbt-disk{disk_index}.vmdk"
+                extent_name = f"cbt-disk{disk_index}-flat.vmdk"
+                disk_record = {
+                    "disk_index": disk_index,
+                    "disk_key": disk_key,
+                    "label": disk.get("label", f"Hard disk {disk_index}"),
+                    "capacity_bytes": capacity_bytes,
+                    "source_disk_path": disk.get("file_name", ""),
+                    "previous_change_id": previous_change_id,
+                    "change_id": current_change_id,
+                    "patch_file": patch_name,
+                    "patch_bytes": patch_result["patch_bytes"],
+                    "patch_sha256": patch_result["patch_sha256"],
+                    "changed_bytes": patch_result["changed_bytes"],
+                    "area_count": patch_result["area_count"],
+                    "areas": patch_result["areas"],
+                    "transport_mode": patch_result.get("transport_mode", ""),
+                    "vddk_disk_info": patch_result.get("vddk_disk_info", {}),
+                    "descriptor_name": descriptor_name,
+                    "extent_name": extent_name,
+                    "adapter_type": "lsilogic",
+                }
+                cbt_manifest["disks"].append(disk_record)
+                total_changed += int(patch_result["changed_bytes"])
+                total_patch += int(patch_result["patch_bytes"])
+                files.append(
+                    {
+                        "name": patch_name,
+                        "bytes": patch_result["patch_bytes"],
+                        "sha256": patch_result["patch_sha256"],
+                        "role": "cbt_patch",
                         "disk_index": disk_index,
                         "disk_key": disk_key,
-                        "label": disk.get("label", f"Hard disk {disk_index}"),
-                        "capacity_bytes": capacity_bytes,
                         "source_disk_path": disk.get("file_name", ""),
-                        "previous_change_id": previous_change_id,
-                        "change_id": current_change_id,
-                        "patch_file": patch_name,
-                        "patch_bytes": patch_result["patch_bytes"],
-                        "patch_sha256": patch_result["patch_sha256"],
-                        "changed_bytes": patch_result["changed_bytes"],
-                        "area_count": patch_result["area_count"],
-                        "areas": patch_result["areas"],
-                        "transport_mode": patch_result.get("transport_mode", ""),
-                        "vddk_disk_info": patch_result.get("vddk_disk_info", {}),
-                        "descriptor_name": descriptor_name,
-                        "extent_name": extent_name,
-                        "adapter_type": "lsilogic",
                     }
-                    cbt_manifest["disks"].append(disk_record)
-                    total_changed += int(patch_result["changed_bytes"])
-                    total_patch += int(patch_result["patch_bytes"])
-                    files.append(
-                        {
-                            "name": patch_name,
-                            "bytes": patch_result["patch_bytes"],
-                            "sha256": patch_result["patch_sha256"],
-                            "role": "cbt_patch",
-                            "disk_index": disk_index,
-                            "disk_key": disk_key,
-                            "source_disk_path": disk.get("file_name", ""),
-                        }
-                    )
+                )
 
             cbt_manifest["updated_at"] = core.now_utc()
             cbt_manifest["changed_bytes"] = total_changed
@@ -1135,10 +1145,17 @@ def create_selected_cbt_backup(
                 "patch_gb": round(total_patch / float(1024**3), 3),
             }
 
+            # Disconnect the VDDK disk connection before removing its snapshot.
+            # EndAccess must happen after the snapshot has been deleted.
+            if vddk_connection is not None:
+                vddk_connection.disconnect()
             if snapshot is not None:
                 core.remove_temporary_snapshot(snapshot, snapshot_info, config)
                 snapshot = None
                 manifest["snapshot"] = snapshot_info
+            if vddk_connection is not None:
+                vddk_connection.close()
+                vddk_connection = None
 
             manifest["status"] = "success"
             manifest["finished_at"] = core.now_utc()
@@ -1152,6 +1169,13 @@ def create_selected_cbt_backup(
             manifest["status"] = "failed"
             manifest["finished_at"] = core.now_utc()
             manifest["error"] = core.exception_message(exc)
+            if vddk_connection is not None:
+                try:
+                    # Keep EndAccess until after the temporary snapshot has
+                    # been removed, as required by VDDK.
+                    vddk_connection.disconnect()
+                except Exception as cleanup_exc:
+                    core.LOGGER.error("VDDK disk connection cleanup failed: %s", cleanup_exc)
             if snapshot is not None:
                 try:
                     core.remove_temporary_snapshot(snapshot, snapshot_info, config)
@@ -1161,6 +1185,11 @@ def create_selected_cbt_backup(
                     snapshot_info["cleanup_error"] = str(cleanup_exc)
                     core.LOGGER.error("Temporary snapshot cleanup failed: %s", cleanup_exc)
                 manifest["snapshot"] = snapshot_info
+            if vddk_connection is not None:
+                try:
+                    vddk_connection.close()
+                except Exception as cleanup_exc:
+                    core.LOGGER.error("VDDK access cleanup failed: %s", cleanup_exc)
             try:
                 (staging_dir / "backup_manifest.json").write_text(
                     json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8"

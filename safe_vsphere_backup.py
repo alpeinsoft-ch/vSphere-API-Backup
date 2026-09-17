@@ -48,11 +48,13 @@ REMOTE_TEMP_DIR = "vsphere_api_backup_tmp"
 SKIPPED_REMOVABLE_EXTENSIONS = {".iso", ".flp"}
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-DEFAULT_OUTPUT_DIR = SCRIPT_DIR / "backups"
+# The dedicated 5-TB filesystem is mounted into the SMB share at this path.
+# Keep this absolute so every entry point uses the same storage even when it
+# is launched from a different working directory.
+DEFAULT_OUTPUT_DIR = Path("/srv/samba/Backup-Alpein/Backup")
 DEFAULT_LOG_FILE = SCRIPT_DIR / "logs" / "vsphere_backup.log"
 DEFAULT_MIN_FREE_GB = 30.0
 DEFAULT_READ_TIMEOUT_SECONDS = 300
-DEFAULT_TASK_TIMEOUT_SECONDS = 3600
 DEFAULT_DATASTORE_COPY_STALL_TIMEOUT_SECONDS = 3600
 DEFAULT_DOWNLOAD_STALL_TIMEOUT_SECONDS = DEFAULT_READ_TIMEOUT_SECONDS
 DEFAULT_CLEANUP_RETRY_ATTEMPTS = 3
@@ -70,13 +72,13 @@ def vddk_library_path() -> str:
     env_path = os.environ.get("VDDK_LIBRARY") or os.environ.get("VIXDISKLIB_LIBRARY")
     candidates = [
         env_path,
-        ctypes.util.find_library("vixDiskLib"),
         str(SCRIPT_DIR / "vendor" / "vddk" / "lib64" / "libvixDiskLib.so"),
         str(SCRIPT_DIR / "vendor" / "vddk" / "lib" / "libvixDiskLib.so"),
         "/usr/lib/vmware-vix-disklib/lib64/libvixDiskLib.so",
         "/usr/lib/vmware-vix-disklib/libvixDiskLib.so",
         "/opt/vmware-vix-disklib/lib64/libvixDiskLib.so",
         "/opt/vmware-vix-disklib/libvixDiskLib.so",
+        ctypes.util.find_library("vixDiskLib"),
     ]
     for candidate in candidates:
         if not candidate:
@@ -100,6 +102,7 @@ class VSphereConfig:
     password: str
     port: int = 443
     ssl_verify: bool = False
+    vddk_thumbprint: str = ""
     output_dir: Path = DEFAULT_OUTPUT_DIR
     target_vm_name: str = DEFAULT_TARGET_VM_NAME
     expected_cpu: int = EXPECTED_CPU
@@ -111,7 +114,6 @@ class VSphereConfig:
     lease_timeout_seconds: int = 300
     read_timeout_seconds: int = DEFAULT_READ_TIMEOUT_SECONDS
     download_stall_timeout_seconds: int = DEFAULT_DOWNLOAD_STALL_TIMEOUT_SECONDS
-    task_timeout_seconds: int = DEFAULT_TASK_TIMEOUT_SECONDS
     datastore_copy_stall_timeout_seconds: int = DEFAULT_DATASTORE_COPY_STALL_TIMEOUT_SECONDS
     live_snapshot_quiesce: bool = False
 
@@ -264,6 +266,7 @@ def load_config(explicit_path: Optional[str]) -> VSphereConfig:
         "VSPHERE_PASSWORD",
         "VSPHERE_PORT",
         "VSPHERE_SSL_VERIFY",
+        "VDDK_THUMBPRINT",
         "VSPHERE_TARGET_VM",
         "VSPHERE_EXPECTED_CPU",
         "VSPHERE_EXPECTED_RAM_MB",
@@ -280,7 +283,6 @@ def load_config(explicit_path: Optional[str]) -> VSphereConfig:
         "LEASE_TIMEOUT_SECONDS",
         "READ_TIMEOUT_SECONDS",
         "DOWNLOAD_STALL_TIMEOUT_SECONDS",
-        "TASK_TIMEOUT_SECONDS",
         "DATASTORE_COPY_STALL_TIMEOUT_SECONDS",
         "DATASTORE_COPY_TIMEOUT_SECONDS",
         "LIVE_SNAPSHOT_QUIESCE",
@@ -320,6 +322,7 @@ def load_config(explicit_path: Optional[str]) -> VSphereConfig:
         password=values["VSPHERE_PASSWORD"],
         port=port,
         ssl_verify=parse_bool(values.get("VSPHERE_SSL_VERIFY", "false")),
+        vddk_thumbprint=values.get("VDDK_THUMBPRINT", "").strip(),
         output_dir=output_dir,
         target_vm_name=values.get("VSPHERE_TARGET_VM", DEFAULT_TARGET_VM_NAME).strip() or DEFAULT_TARGET_VM_NAME,
         expected_cpu=int(values.get("VSPHERE_EXPECTED_CPU", EXPECTED_CPU)),
@@ -336,7 +339,6 @@ def load_config(explicit_path: Optional[str]) -> VSphereConfig:
                 values.get("READ_TIMEOUT_SECONDS", DEFAULT_DOWNLOAD_STALL_TIMEOUT_SECONDS),
             )
         ),
-        task_timeout_seconds=int(values.get("TASK_TIMEOUT_SECONDS", DEFAULT_TASK_TIMEOUT_SECONDS)),
         datastore_copy_stall_timeout_seconds=int(
             values.get(
                 "DATASTORE_COPY_STALL_TIMEOUT_SECONDS",
@@ -826,7 +828,7 @@ def ensure_change_tracking_enabled(
     spec = vim.vm.ConfigSpec()
     spec.changeTrackingEnabled = True
     task = vm.ReconfigVM_Task(spec=spec)
-    wait_for_task(task, f"Enable CBT for {target_name}", config.task_timeout_seconds)
+    wait_for_task(task, f"Enable CBT for {target_name}")
 
     refreshed = collect_vm_info(vm)
     current_enabled = bool(refreshed.get("change_tracking_enabled"))
@@ -1027,11 +1029,15 @@ def abort_lease(lease: vim.HttpNfcLease, message: str) -> None:
         LOGGER.warning("Could not abort HttpNfcLease cleanly: %s", exc)
 
 
-def wait_for_task(task: vim.Task, action: str, timeout_seconds: int) -> Any:
-    deadline = time.time() + timeout_seconds
+def wait_for_task(task: vim.Task, action: str) -> Any:
+    """Wait for a vSphere task until it succeeds or reports an error.
+
+    Long-running datastore operations must use wait_for_task_progress() so a
+    timeout is based on actual progress rather than total wall-clock time.
+    """
     last_log_at = 0.0
     last_progress = None
-    while time.time() < deadline:
+    while True:
         info = task.info
         state = info.state
         if state == vim.TaskInfo.State.success:
@@ -1046,7 +1052,6 @@ def wait_for_task(task: vim.Task, action: str, timeout_seconds: int) -> Any:
             last_progress = progress
             last_log_at = time.time()
         time.sleep(2)
-    raise TimeoutError(f"{action} did not finish after {timeout_seconds} seconds")
 
 
 def wait_for_task_progress(task: vim.Task, action: str, stall_timeout_seconds: int) -> Any:
@@ -1115,6 +1120,7 @@ def create_temporary_snapshot(
     vm: vim.VirtualMachine,
     config: VSphereConfig,
 ) -> tuple[vim.vm.Snapshot, Dict[str, Any]]:
+    vm_name = str(getattr(vm, "name", "") or config.target_vm_name or TARGET_VM_NAME)
     snapshot_name = f"{LIVE_SNAPSHOT_PREFIX}-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}"
     snapshot_info: Dict[str, Any] = {
         "required": True,
@@ -1125,18 +1131,18 @@ def create_temporary_snapshot(
         "quiesce": config.live_snapshot_quiesce,
     }
     description = (
-        f"Temporary snapshot for {TARGET_VM_NAME} vSphere API backup. "
+        f"Temporary snapshot for {vm_name} vSphere API backup. "
         f"Started at {now_utc()}."
     )
 
-    LOGGER.info("Creating temporary snapshot %s for %s", snapshot_name, TARGET_VM_NAME)
+    LOGGER.info("Creating temporary snapshot %s for %s", snapshot_name, vm_name)
     task = vm.CreateSnapshot_Task(
         name=snapshot_name,
         description=description,
         memory=False,
         quiesce=config.live_snapshot_quiesce,
     )
-    snapshot = wait_for_task(task, f"Create snapshot {snapshot_name}", config.task_timeout_seconds)
+    snapshot = wait_for_task(task, f"Create snapshot {snapshot_name}")
     if snapshot is None:
         snapshot = find_snapshot_by_name(vm, snapshot_name)
     if snapshot is None:
@@ -1160,7 +1166,7 @@ def remove_temporary_snapshot(
         task = snapshot.RemoveSnapshot_Task(removeChildren=False, consolidate=True)
     except TypeError:
         task = snapshot.RemoveSnapshot_Task(removeChildren=False)
-    wait_for_task(task, f"Remove snapshot {snapshot_name}", config.task_timeout_seconds)
+    wait_for_task(task, f"Remove snapshot {snapshot_name}")
     snapshot_info["removed"] = True
     snapshot_info["removed_at"] = now_utc()
     snapshot_info["cleanup_status"] = "success"
@@ -1334,7 +1340,7 @@ def delete_datastore_path(
             name=datastore_path,
             datacenter=datacenter,
         )
-        wait_for_task(task, action, config.task_timeout_seconds)
+        wait_for_task(task, action)
 
     run_with_cleanup_retries(action, delete_once)
 
@@ -1591,7 +1597,6 @@ def export_snapshot_with_datastore_copy(
                     wait_for_task(
                         copy_task,
                         f"Finish virtual disk copy {active_source_path}",
-                        config.task_timeout_seconds,
                     )
                 except BaseException as exc:
                     remote_copy["cleanup_status"] = "skipped_copy_still_running"

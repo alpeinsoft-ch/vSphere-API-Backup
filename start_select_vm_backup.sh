@@ -3,6 +3,18 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
+# VDDK's advanced transport plugin depends on the libraries shipped beside it.
+# Keep the normal invocation unchanged while making those dependencies
+# visible to the dynamic linker.
+VDDK_LIB_DIR="$(pwd)/vendor/vddk/lib64"
+if [ -d "$VDDK_LIB_DIR" ]; then
+  if [ -n "${LD_LIBRARY_PATH:-}" ]; then
+    export LD_LIBRARY_PATH="$VDDK_LIB_DIR:$LD_LIBRARY_PATH"
+  else
+    export LD_LIBRARY_PATH="$VDDK_LIB_DIR"
+  fi
+fi
+
 if [ -n "${VSPHERE_USE_SCREEN:-}" ] && [ -z "${VSPHERE_SCREEN_WRAPPED:-}" ] && [ -z "${STY:-}" ] && [ -z "${TMUX:-}" ] && [ -t 0 ]; then
   SCREEN_SESSION="${VSPHERE_SCREEN_SESSION:-vsphere-backup}"
   case "$SCREEN_SESSION" in

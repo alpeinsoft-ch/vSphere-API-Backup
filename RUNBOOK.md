@@ -1,5 +1,12 @@
 # Runbook
 
+Vor jedem Lauf zuerst [`VOR_BACKUP_LESEN.md`](../VOR_BACKUP_LESEN.md) lesen.
+Der normale Backup-Start erfolgt ausschließlich mit:
+
+```bash
+./start_select_vm_backup.sh
+```
+
 ## 1. Zugangsdaten eintragen
 
 ```bash
@@ -16,7 +23,7 @@ VSPHERE_SERVER=<vcenter-host-oder-url>
 VSPHERE_USER=<backup-user>
 VSPHERE_PASSWORD=<passwort>
 VSPHERE_TARGET_VM=<ziel-vm-fuer-den-geschuetzten-pfad>
-BACKUP_OUTPUT_DIR=./backups
+BACKUP_OUTPUT_DIR=/srv/samba/Backup-Alpein/Backup
 ```
 
 ## 2. Abhaengigkeiten vorbereiten
@@ -101,9 +108,9 @@ bei gewuenschten VMs das fuehrende `# `.
 Der bisherige interaktive Delta-Pfad legt pro VM eine Kette an:
 
 ```text
-backups/<VM>/full_0001
-backups/<VM>/delta_0002
-backups/<VM>/delta_0003
+/srv/samba/Backup-Alpein/Backup/<VM>/full_0001
+/srv/samba/Backup-Alpein/Backup/<VM>/delta_0002
+/srv/samba/Backup-Alpein/Backup/<VM>/delta_0003
 ```
 
 `--backup-mode local-delta` ist lokaler Chunk-Dedupe nach einem normalen
@@ -139,14 +146,14 @@ eine CBT-Baseline entsteht.
 Manuelles Delta-Pack eines vorhandenen Backups:
 
 ```bash
-python3 backup_vsphere.py delta-pack backups/<VM>/<lauf> --remove-originals
+python3 backup_vsphere.py delta-pack /srv/samba/Backup-Alpein/Backup/<VM>/<lauf> --remove-originals
 ```
 
 ## 7. Verify
 
 ```bash
-python3 backup_vsphere.py verify backups/<backup-ordner>
-./start_select_vm_backup.sh --verify backups/<VM>/<lauf>
+python3 backup_vsphere.py verify /srv/samba/Backup-Alpein/Backup/<backup-ordner>
+./start_select_vm_backup.sh --verify /srv/samba/Backup-Alpein/Backup/<VM>/<lauf>
 ```
 
 ## 8. Restore
@@ -157,11 +164,16 @@ Interaktiv:
 ./start_restore_vm_backup.sh
 ```
 
+Der kurze Aufruf ist der normale, benutzerfreundliche Weg. Das Skript fragt
+danach den VM-/Restore-Punkt, den neuen VM-Namen, Ziel-Datacenter, Datastore,
+Resource-Pool, Netzwerk, NVRAM und Einschaltverhalten ab. Die sichere
+Bestätigung des neuen VM-Namens bleibt aktiv.
+
 Nicht-interaktiv:
 
 ```bash
 ./start_restore_vm_backup.sh \
-  --backup-dir backups/<VM>/<lauf> \
+  --backup-dir /srv/samba/Backup-Alpein/Backup/<VM>/<lauf> \
   --new-name <neuer-vm-name> \
   --yes
 ```
@@ -170,10 +182,23 @@ Dry-Run:
 
 ```bash
 ./start_restore_vm_backup.sh \
-  --backup-dir backups/<VM>/<lauf> \
+  --backup-dir /srv/samba/Backup-Alpein/Backup/<VM>/<lauf> \
   --new-name <neuer-vm-name> \
   --dry-run
 ```
+
+Der Restore legt seinen temporären Arbeitsbereich automatisch unter
+`.restore-tmp` auf dem Backup-Datenträger an. Dadurch wird ein kleines `/tmp`
+nicht versehentlich für die Materialisierung großer CBT-Disk-Ketten verwendet.
+Ein anderer Speicherort kann bei Bedarf gesetzt werden:
+
+```bash
+VSPHERE_RESTORE_TMPDIR=/pfad/mit/genug/freiem/platz ./start_restore_vm_backup.sh
+```
+
+Nach der Startmeldung zeigt das Restore regelmäßig den Fortschritt der
+VMDK-Materialisierung in GiB und Prozent im Terminal und in
+`logs/vsphere_backup.log` an.
 
 ## 9. Wiederkehrender Listenlauf
 

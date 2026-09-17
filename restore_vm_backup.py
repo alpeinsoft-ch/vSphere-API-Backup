@@ -13,9 +13,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
+import shutil
 import sys
-from dataclasses import dataclass
+import tempfile
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence
@@ -31,6 +34,8 @@ import vddk_cbt
 
 
 DEFAULT_CONFIG = "credentials.env"
+RESTORE_TEMP_DIR_ENV = "VSPHERE_RESTORE_TMPDIR"
+DEFAULT_RESTORE_TEMP_DIRNAME = ".restore-tmp"
 OVF_NS = "http://schemas.dmtf.org/ovf/envelope/1"
 RASD_NS = "http://schemas.dmtf.org/wbem/wscim/1/cim-schema/2/CIM_ResourceAllocationSettingData"
 VSSD_NS = "http://schemas.dmtf.org/wbem/wscim/1/cim-schema/2/CIM_VirtualSystemSettingData"
@@ -47,6 +52,22 @@ class BackupArtifacts:
     ctk_names: List[str]
     upload_files: List[str]
     ovf: Dict[str, Any]
+    disk_artifacts: List["RestoreDiskArtifacts"] = field(default_factory=list)
+    upload_sources: Dict[str, Path] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class RestoreDiskArtifacts:
+    """One restorable descriptor/extent pair, including its local source."""
+
+    disk_index: int
+    disk_key: str
+    capacity_bytes: int
+    descriptor_name: str
+    extent_names: List[str]
+    ctk_names: List[str]
+    descriptor_path: Path
+    extent_paths: List[Path]
 
 
 @dataclass(frozen=True)
@@ -75,6 +96,58 @@ class RestorePoint:
     file_count: int
     delta_packed_files: int
     delta_removed_original_bytes: int
+
+
+def restore_materialization_parent(backup_dir: Path) -> Path:
+    """Choose the parent directory for temporary restore materialization.
+
+    A CBT restore may need several full-sized working copies of the virtual
+    disk. The system temporary directory is often a small root filesystem,
+    while the backup volume is deliberately large. Use an explicit restore
+    directory when configured; otherwise keep the workspace on the backup
+    volume automatically.
+    """
+    configured = os.environ.get(RESTORE_TEMP_DIR_ENV, "").strip()
+    if configured:
+        return Path(configured).expanduser().resolve()
+
+    backup_dir = backup_dir.expanduser().resolve()
+    backup_root = backup_dir.parent.parent
+    return backup_root / DEFAULT_RESTORE_TEMP_DIRNAME
+
+
+def create_restore_materialization_tmp(backup_dir: Path) -> tempfile.TemporaryDirectory:
+    """Create a cleaned-up temporary workspace on a suitable filesystem."""
+    parent = restore_materialization_parent(backup_dir)
+    try:
+        parent.mkdir(parents=True, exist_ok=True)
+        usage = shutil.disk_usage(parent)
+    except OSError as exc:
+        raise core.SafetyError(
+            f"Cannot prepare restore workspace {parent}: {exc}"
+        ) from exc
+
+    # A single materialized disk is already commonly larger than /tmp. The
+    # actual chain may need additional copies; the full check is left to the
+    # write operation, but this catches the most common misconfiguration with
+    # a useful message before VDDK starts reading the backup.
+    if usage.free < 1 * 1024**3:
+        raise core.SafetyError(
+            f"Restore workspace has insufficient free space: {parent} "
+            f"({usage.free / 1024**3:.2f} GiB free)"
+        )
+
+    try:
+        core.LOGGER.info(
+            "Using restore materialization workspace %s (%.2f GiB free)",
+            parent,
+            usage.free / 1024**3,
+        )
+        return tempfile.TemporaryDirectory(prefix="vsphere-restore-", dir=str(parent))
+    except OSError as exc:
+        raise core.SafetyError(
+            f"Cannot create restore workspace in {parent}: {exc}"
+        ) from exc
 
 
 def ns(name: str, namespace: str = OVF_NS) -> str:
@@ -376,6 +449,172 @@ def prompt_new_vm_name(backup_dir: Path) -> str:
     return raw or default_new_name
 
 
+def prompt_yes_no(question: str, default: bool = False) -> bool:
+    suffix = "[J/n]" if default else "[j/N]"
+    raw = input(f"{question} {suffix}: ").strip().lower()
+    if not raw:
+        return default
+    if raw in {"j", "ja", "y", "yes"}:
+        return True
+    if raw in {"n", "nein", "no"}:
+        return False
+    print("Bitte j oder n eingeben.")
+    return prompt_yes_no(question, default)
+
+
+def prompt_named_choice(
+    question: str,
+    names: Sequence[str],
+    default_name: str = "",
+) -> str:
+    choices = [str(name) for name in names if str(name).strip()]
+    if not choices:
+        raise core.SafetyError(f"Keine Auswahlmoeglichkeiten fuer {question}")
+    default_index = choices.index(default_name) + 1 if default_name in choices else 1
+    print()
+    for index, name in enumerate(choices, start=1):
+        print(f"  {index}) {name}")
+    while True:
+        default_text = f"{default_index}/{choices[default_index - 1]}"
+        raw = input(f"{question} [{default_text}], q fuer Abbruch: ").strip()
+        if not raw:
+            return choices[default_index - 1]
+        if raw.lower() in {"q", "quit", "abbruch"}:
+            raise core.SafetyError("Restore selection aborted.")
+        if raw.isdigit():
+            index = int(raw)
+            if 1 <= index <= len(choices):
+                return choices[index - 1]
+        elif raw in choices:
+            return raw
+        print("Bitte eine Nummer oder einen exakten Namen eingeben.")
+
+
+def collect_interactive_target_options(
+    session: core.VSphereSession,
+) -> Dict[str, Dict[str, List[str]]]:
+    """Read target names while connected, returning only plain strings."""
+    datacenters = all_datacenters(session)
+    datacenter_options: Dict[str, Dict[str, List[str]]] = {}
+    for datacenter in datacenters:
+        pools: List[vim.ResourcePool] = []
+        for entity in getattr(datacenter.hostFolder, "childEntity", []) or []:
+            root_pool = getattr(entity, "resourcePool", None)
+            if root_pool is not None:
+                pools.extend(iter_resource_pools(root_pool))
+        datacenter_options[datacenter.name] = {
+            "datastores": [datastore.name for datastore in datacenter.datastore],
+            "resource_pools": [pool.name for pool in pools],
+            "networks": [network.name for network in datacenter.network],
+        }
+    return datacenter_options
+
+
+def prompt_interactive_restore_options(
+    args: argparse.Namespace,
+    artifacts: BackupArtifacts,
+    datacenter_options: Dict[str, Dict[str, List[str]]],
+) -> None:
+    """Ask for restore settings after the inventory session is closed."""
+    if not args.interactive or not sys.stdin.isatty():
+        return
+
+    if not args.datacenter:
+        args.datacenter = prompt_named_choice(
+            "Ziel-Datacenter auswaehlen",
+            list(datacenter_options),
+        )
+    if args.datacenter not in datacenter_options:
+        raise core.SafetyError(f"Datacenter not found or not unique: {args.datacenter}")
+    selected_options = datacenter_options[args.datacenter]
+
+    source_datastore = str(
+        ((artifacts.vm_info.get("disks") or [{}])[0]).get("datastore") or ""
+    )
+    if not args.datastore:
+        args.datastore = prompt_named_choice(
+            "Ziel-Datastore auswaehlen",
+            selected_options["datastores"],
+            default_name=source_datastore,
+        )
+
+    if not args.resource_pool:
+        args.resource_pool = prompt_named_choice(
+            "Ziel-Resource-Pool auswaehlen",
+            selected_options["resource_pools"],
+        )
+
+    if args.no_network:
+        pass
+    elif not prompt_yes_no("Netzwerkadapter wiederherstellen?", default=True):
+        args.no_network = True
+        args.connect_network = False
+    else:
+        source_network = str(artifacts.ovf.get("network_name") or "VM Network")
+        if selected_options["networks"]:
+            args.network = prompt_named_choice(
+                "Ziel-Netzwerk auswaehlen",
+                selected_options["networks"],
+                default_name=source_network,
+            )
+            args.connect_network = prompt_yes_no(
+                "Netzwerkadapter beim Einschalten verbinden?",
+                default=False,
+            )
+        else:
+            print("Kein Netzwerk im Ziel-Datacenter gefunden; VM wird ohne Netzwerkadapter erstellt.")
+            args.no_network = True
+            args.connect_network = False
+
+    if any(name.lower().endswith(".nvram") for name in artifacts.upload_files):
+        args.use_backup_nvram = prompt_yes_no(
+            "Gesicherte NVRAM-Datei verwenden?",
+            default=False,
+        )
+
+    args.power_on = prompt_yes_no(
+        "Wiederhergestellte VM nach dem Restore einschalten?",
+        default=False,
+    )
+def prompt_interactive_restore_folder(
+    args: argparse.Namespace,
+    config: core.VSphereConfig,
+    new_name: str,
+) -> None:
+    """Resolve a conflicting default folder before the long materialization."""
+    if not args.interactive or args.folder_name or args.dry_run:
+        return
+
+    default_folder = validate_datastore_folder_name(
+        args.folder_name or core.safe_filename(new_name, "restored-vm")
+    )
+    with core.VSphereSession(config) as session:
+        datacenter = select_datacenter(session, args.datacenter or "")
+        datastore_name = args.datastore or ""
+        if not datastore_name:
+            raise core.SafetyError("Select --datastore explicitly; interactive selection returned no datastore")
+        datastore = find_datastore(datacenter, datastore_name)
+        if not datastore_path_exists(session, datacenter, datastore, default_folder, config):
+            return
+        suggested_folder = first_available_datastore_folder(
+            session,
+            datacenter,
+            datastore,
+            default_folder,
+            config,
+        )
+
+    print()
+    existing_path = core.datastore_path_join(datastore_name, default_folder)
+    print(f"Datastore-Ordner ist bereits vorhanden: {existing_path}")
+    raw = input(
+        f"Anderen Datastore-Ordner verwenden [{suggested_folder}], q fuer Abbruch: "
+    ).strip()
+    if raw.lower() in {"q", "quit", "abbruch"}:
+        raise core.SafetyError("Restore selection aborted.")
+    args.folder_name = validate_datastore_folder_name(raw or suggested_folder)
+
+
 def validate_vm_display_name(name: str) -> str:
     cleaned = (name or "").strip()
     if not cleaned:
@@ -464,6 +703,94 @@ def parse_vmdk_extent_files_from_text(descriptor: str) -> List[str]:
 
 def parse_vmdk_change_track_files(descriptor: str) -> List[str]:
     return re.findall(r'changeTrackPath\s*=\s*"([^"]+)"', descriptor)
+
+
+def _manifest_items_for_disk(
+    manifest: Dict[str, Any],
+    role: str,
+    disk_index: int,
+    disk_key: str,
+) -> List[Dict[str, Any]]:
+    items = [item for item in manifest.get("files", []) or [] if item.get("vmdk_role") == role]
+    if not items:
+        return []
+
+    by_key = [item for item in items if disk_key and str(item.get("disk_key") or "") == disk_key]
+    if by_key:
+        return by_key
+    by_index = []
+    for item in items:
+        try:
+            if disk_index and int(item.get("disk_index") or 0) == disk_index:
+                by_index.append(item)
+        except (TypeError, ValueError):
+            continue
+    if by_index:
+        return by_index
+    if len(items) == 1:
+        return items
+    return []
+
+
+def _full_descriptor_for_disk(
+    backup_dir: Path,
+    manifest: Dict[str, Any],
+    disk_index: int,
+    disk_key: str,
+) -> Optional[tuple[Path, str]]:
+    candidates = _manifest_items_for_disk(manifest, "descriptor", disk_index, disk_key)
+    for item in candidates:
+        try:
+            path = backup_dir / core.safe_filename(str(item.get("name") or ""), "descriptor.vmdk")
+        except Exception:
+            continue
+        if path.exists() and is_vmdk_descriptor(path):
+            return path, path.read_text(encoding="utf-8", errors="ignore")
+
+    for candidate in sorted(backup_dir.glob("*.vmdk")):
+        if is_vmdk_descriptor(candidate):
+            return candidate, candidate.read_text(encoding="utf-8", errors="ignore")
+    return None
+
+
+def restore_disks_for_artifacts(artifacts: BackupArtifacts) -> List[RestoreDiskArtifacts]:
+    """Return all disks, with a compatibility fallback for older callers."""
+    if artifacts.disk_artifacts:
+        return list(artifacts.disk_artifacts)
+    if not artifacts.descriptor_name:
+        return []
+    return [
+        RestoreDiskArtifacts(
+            disk_index=1,
+            disk_key="",
+            capacity_bytes=int((artifacts.vm_info.get("disks") or [{}])[0].get("capacity_bytes") or 0),
+            descriptor_name=artifacts.descriptor_name,
+            extent_names=list(artifacts.extent_names),
+            ctk_names=list(artifacts.ctk_names),
+            descriptor_path=artifacts.upload_sources.get(
+                artifacts.descriptor_name,
+                artifacts.backup_dir / artifacts.descriptor_name,
+            ),
+            extent_paths=[
+                artifacts.upload_sources.get(name, artifacts.backup_dir / name)
+                for name in artifacts.extent_names
+            ],
+        )
+    ]
+
+
+def artifact_source_path(artifacts: BackupArtifacts, name: str) -> Optional[Path]:
+    source = artifacts.upload_sources.get(name)
+    if source is not None and source.exists():
+        return source
+    return find_file_case_sensitive(artifacts.backup_dir, name, hydrate_delta=False)
+
+
+def artifact_file_size(artifacts: BackupArtifacts, name: str) -> int:
+    source = artifact_source_path(artifacts, name)
+    if source is not None:
+        return source.stat().st_size
+    return backup_file_logical_size(artifacts.backup_dir, name)
 
 
 def sanitize_vmdk_descriptor_for_import(descriptor: str) -> str:
@@ -589,7 +916,45 @@ def parse_ovf(backup_dir: Path, manifest: Dict[str, Any]) -> Dict[str, Any]:
     return result
 
 
-def load_backup_artifacts(backup_dir: Path, skip_hash: bool = False) -> BackupArtifacts:
+def load_restore_prompt_artifacts(backup_dir: Path) -> BackupArtifacts:
+    """Load only small metadata needed for choices before CBT materialization."""
+    backup_dir = backup_dir.expanduser().resolve()
+    manifest_path = backup_dir / "backup_manifest.json"
+    metadata_path = backup_dir / "vm_metadata.json"
+    if not manifest_path.exists():
+        raise FileNotFoundError(f"Missing backup manifest: {manifest_path}")
+    if not metadata_path.exists():
+        raise FileNotFoundError(f"Missing VM metadata: {metadata_path}")
+
+    manifest = read_json(manifest_path)
+    vm_info = read_json(metadata_path)
+    status = manifest.get("status", "")
+    if status not in {"success", "success_rescued"}:
+        raise core.SafetyError(f"Backup manifest is not successful: status={status!r}")
+
+    upload_files = [
+        str(item.get("name") or "")
+        for item in manifest.get("files", []) or []
+        if item.get("name")
+    ]
+    upload_files.extend(path.name for path in backup_dir.glob("*.nvram"))
+    return BackupArtifacts(
+        backup_dir=backup_dir,
+        manifest=manifest,
+        vm_info=vm_info,
+        descriptor_name="",
+        extent_names=[],
+        ctk_names=[],
+        upload_files=list(dict.fromkeys(upload_files)),
+        ovf=parse_ovf(backup_dir, manifest),
+    )
+
+
+def load_backup_artifacts(
+    backup_dir: Path,
+    skip_hash: bool = False,
+    materialization_root: Optional[Path] = None,
+) -> BackupArtifacts:
     backup_dir = backup_dir.expanduser().resolve()
     manifest_path = backup_dir / "backup_manifest.json"
     metadata_path = backup_dir / "vm_metadata.json"
@@ -608,51 +973,141 @@ def load_backup_artifacts(backup_dir: Path, skip_hash: bool = False) -> BackupAr
     if errors:
         raise core.SafetyError("Backup verification failed: " + "; ".join(errors))
 
-    descriptor_name = ""
-    descriptor_text = ""
-    if manifest.get("cbt_storage"):
-        materialized = vddk_cbt.ensure_materialized_vmdks(backup_dir, manifest=manifest)
-        disks = materialized.get("disks", [])
-        if not disks:
-            raise core.SafetyError("CBT backup materialization produced no VMDK disks")
-        descriptor_path = Path(str(disks[0].get("descriptor_path") or ""))
-        if not descriptor_path.exists():
-            raise core.SafetyError(f"CBT materialized descriptor missing: {descriptor_path}")
-        descriptor_name = descriptor_path.name
-        descriptor_text = descriptor_path.read_text(encoding="utf-8", errors="ignore")
-
-    for item in manifest.get("files", []):
-        if descriptor_name:
-            break
-        if item.get("vmdk_role") == "descriptor":
-            candidate = backup_dir / item["name"]
-            if candidate.exists():
-                descriptor_name = candidate.name
-                descriptor_text = candidate.read_text(encoding="utf-8", errors="ignore")
-                break
-
-    if not descriptor_name:
-        for candidate in sorted(backup_dir.glob("*.vmdk")):
-            if is_vmdk_descriptor(candidate):
-                descriptor_name = candidate.name
-                descriptor_text = candidate.read_text(encoding="utf-8", errors="ignore")
-                break
-
-    if not descriptor_name:
+    if manifest.get("cbt_storage") and materialization_root is None:
         raise core.SafetyError(
-            "No VMDK descriptor found. This restore script supports descriptor+extent VMDK backups."
+            "CBT restore requires a temporary materialization directory; "
+            "the backup directory will not be used for restore workspace"
         )
 
-    extent_names = parse_vmdk_extent_files_from_text(descriptor_text)
-    ctk_names = parse_vmdk_change_track_files(descriptor_text)
-    missing = [name for name in extent_names if not backup_file_available(backup_dir, name)]
-    if missing:
-        raise core.SafetyError(f"Descriptor references missing extent file(s): {missing}")
+    disk_artifacts: List[RestoreDiskArtifacts] = []
+    upload_sources: Dict[str, Path] = {}
+    if manifest.get("cbt_storage"):
+        materialized = vddk_cbt.ensure_materialized_vmdks(
+            backup_dir,
+            manifest=manifest,
+            materialization_root=materialization_root,
+        )
+        materialized_disks = materialized.get("disks", [])
+        if not materialized_disks:
+            raise core.SafetyError("CBT backup materialization produced no VMDK disks")
 
-    upload_files = [descriptor_name]
-    upload_files.extend(extent_names)
+        for entry in sorted(
+            materialized_disks,
+            key=lambda item: int(item.get("disk_index") or 0),
+        ):
+            descriptor_path = Path(str(entry.get("descriptor_path") or "")).resolve()
+            extent_path = Path(str(entry.get("extent_path") or "")).resolve()
+            if not descriptor_path.exists():
+                raise core.SafetyError(f"CBT materialized descriptor missing: {descriptor_path}")
+            if not extent_path.exists():
+                raise core.SafetyError(f"CBT materialized extent missing: {extent_path}")
+            disk_index = int(entry.get("disk_index") or len(disk_artifacts) + 1)
+            descriptor_name = descriptor_path.name
+            extent_name = extent_path.name
+            disk_artifacts.append(
+                RestoreDiskArtifacts(
+                    disk_index=disk_index,
+                    disk_key=str(entry.get("disk_key") or entry.get("key") or ""),
+                    capacity_bytes=int(entry.get("capacity_bytes") or extent_path.stat().st_size),
+                    descriptor_name=descriptor_name,
+                    extent_names=[extent_name],
+                    ctk_names=[],
+                    descriptor_path=descriptor_path,
+                    extent_paths=[extent_path],
+                )
+            )
+            upload_sources[descriptor_name] = descriptor_path
+            upload_sources[extent_name] = extent_path
+    else:
+        disk_infos = list(vm_info.get("disks") or [])
+        if not disk_infos:
+            descriptor_items = [
+                item for item in manifest.get("files", []) or []
+                if item.get("vmdk_role") == "descriptor"
+            ]
+            disk_infos = [
+                {
+                    "disk_index": int(item.get("disk_index") or index),
+                    "key": item.get("disk_key") or "",
+                    "capacity_bytes": 0,
+                }
+                for index, item in enumerate(descriptor_items, start=1)
+            ]
+        if not disk_infos:
+            raise core.SafetyError("Backup metadata contains no virtual disks")
+
+        for index, disk_info in enumerate(disk_infos, start=1):
+            disk_index = int(disk_info.get("disk_index") or index)
+            disk_key = str(disk_info.get("disk_key") or disk_info.get("key") or "")
+            descriptor_result = _full_descriptor_for_disk(
+                backup_dir,
+                manifest,
+                disk_index,
+                disk_key,
+            )
+            if descriptor_result is not None:
+                descriptor_path, descriptor_text = descriptor_result
+                descriptor_name = descriptor_path.name
+                extent_names = parse_vmdk_extent_files_from_text(descriptor_text)
+                ctk_names = parse_vmdk_change_track_files(descriptor_text)
+                extent_paths = [backup_dir / name for name in extent_names]
+                missing = [name for name, path in zip(extent_names, extent_paths) if not path.exists()]
+                if missing:
+                    raise core.SafetyError(f"Descriptor references missing extent file(s): {missing}")
+            else:
+                if materialization_root is None:
+                    raise core.SafetyError(
+                        "Stream-optimized VMDK restore needs a temporary materialization directory"
+                    )
+                disk_for_source = dict(disk_info)
+                disk_for_source["disk_index"] = disk_index
+                disk_for_source["disk_key"] = disk_key
+                materialized = vddk_cbt.materialize_stream_optimized_vmdk(
+                    backup_dir,
+                    disk_for_source,
+                    Path(materialization_root).expanduser().resolve() / "full" / f"disk-{disk_index}",
+                    manifest=manifest,
+                )
+                descriptor_path = Path(str(materialized["descriptor_path"])).resolve()
+                extent_path = Path(str(materialized["extent_path"])).resolve()
+                descriptor_name = descriptor_path.name
+                extent_names = [extent_path.name]
+                ctk_names = []
+                extent_paths = [extent_path]
+
+            disk_artifacts.append(
+                RestoreDiskArtifacts(
+                    disk_index=disk_index,
+                    disk_key=disk_key,
+                    capacity_bytes=int(
+                        disk_info.get("capacity_bytes")
+                        or (extent_paths[0].stat().st_size if extent_paths else 0)
+                    ),
+                    descriptor_name=descriptor_name,
+                    extent_names=extent_names,
+                    ctk_names=ctk_names,
+                    descriptor_path=descriptor_path,
+                    extent_paths=extent_paths,
+                )
+            )
+            upload_sources[descriptor_name] = descriptor_path
+            for name, path in zip(extent_names, extent_paths):
+                upload_sources[name] = path
+
+    disk_artifacts.sort(key=lambda item: item.disk_index)
+    if not disk_artifacts:
+        raise core.SafetyError("No restorable virtual disks found")
+
+    descriptor_name = disk_artifacts[0].descriptor_name
+    extent_names = list(disk_artifacts[0].extent_names)
+    ctk_names = list(disk_artifacts[0].ctk_names)
+    upload_files: List[str] = []
+    for disk in disk_artifacts:
+        upload_files.append(disk.descriptor_name)
+        upload_files.extend(disk.extent_names)
     for candidate in backup_dir.glob("*.nvram"):
         upload_files.append(candidate.name)
+        upload_sources[candidate.name] = candidate
 
     deduped: List[str] = []
     for name in upload_files:
@@ -668,6 +1123,8 @@ def load_backup_artifacts(backup_dir: Path, skip_hash: bool = False) -> BackupAr
         ctk_names=ctk_names,
         upload_files=deduped,
         ovf=parse_ovf(backup_dir, manifest),
+        disk_artifacts=disk_artifacts,
+        upload_sources=upload_sources,
     )
 
 
@@ -754,7 +1211,7 @@ def datastore_path_exists(
             datastorePath=core.datastore_path_join(datastore.name, datastore_folder),
             searchSpec=spec,
         )
-        core.wait_for_task(task, f"Browse datastore folder {datastore_folder}", config.task_timeout_seconds)
+        core.wait_for_task(task, f"Browse datastore folder {datastore_folder}")
         return True
     except Exception as exc:
         text = str(exc).lower()
@@ -866,10 +1323,18 @@ def upload_vmdk_descriptor_for_import(
     )
 
 
-def imported_disk_descriptor_name(new_name: str, artifacts: BackupArtifacts) -> str:
+def imported_disk_descriptor_name(
+    new_name: str,
+    artifacts: BackupArtifacts,
+    disk_index: int = 1,
+) -> str:
     base = core.safe_filename(new_name, "restored-vm")
     used = set(artifacts.upload_files)
-    for suffix in ("", "-imported", "-disk0"):
+    if disk_index <= 1:
+        suffixes = ("", "-imported", "-disk0")
+    else:
+        suffixes = (f"-disk{disk_index}", f"-disk{disk_index}-imported")
+    for suffix in suffixes:
         candidate = f"{base}{suffix}.vmdk"
         if candidate not in used:
             return candidate
@@ -890,7 +1355,7 @@ def adapter_type_for_import(artifacts: BackupArtifacts) -> str:
     if "lsilogic" in subtype or "lsi logic" in subtype:
         return "lsiLogic"
 
-    descriptor_path = find_file_case_sensitive(artifacts.backup_dir, artifacts.descriptor_name, hydrate_delta=True)
+    descriptor_path = artifact_source_path(artifacts, artifacts.descriptor_name)
     if descriptor_path is None:
         raise FileNotFoundError(f"VMDK descriptor not found: {artifacts.descriptor_name}")
     descriptor = descriptor_path.read_text(encoding="utf-8", errors="ignore")
@@ -903,13 +1368,16 @@ def import_uploaded_vmdk(
     artifacts: BackupArtifacts,
     target: RestoreTarget,
     new_name: str,
+    disk: Optional[RestoreDiskArtifacts] = None,
 ) -> str:
+    descriptor_name = disk.descriptor_name if disk is not None else artifacts.descriptor_name
+    disk_index = disk.disk_index if disk is not None else 1
     source_path = core.datastore_path_join(
         target.datastore_name,
         target.datastore_folder,
-        artifacts.descriptor_name,
+        descriptor_name,
     )
-    imported_name = imported_disk_descriptor_name(new_name, artifacts)
+    imported_name = imported_disk_descriptor_name(new_name, artifacts, disk_index=disk_index)
     imported_path = core.datastore_path_join(
         target.datastore_name,
         target.datastore_folder,
@@ -929,7 +1397,11 @@ def import_uploaded_vmdk(
         destSpec=spec,
         force=False,
     )
-    core.wait_for_task(task, f"Import VMDK {source_path}", config.task_timeout_seconds)
+    core.wait_for_task_progress(
+        task,
+        f"Import VMDK {source_path}",
+        config.datastore_copy_stall_timeout_seconds,
+    )
     return imported_name
 
 
@@ -938,11 +1410,16 @@ def cleanup_uploaded_import_sources(
     config: core.VSphereConfig,
     artifacts: BackupArtifacts,
     target: RestoreTarget,
-    imported_name: str,
+    imported_name: str | Sequence[str],
 ) -> None:
-    source_names = [artifacts.descriptor_name, *artifacts.extent_names, *artifacts.ctk_names]
+    imported_names = {imported_name} if isinstance(imported_name, str) else set(imported_name)
+    source_names: List[str] = []
+    for disk in restore_disks_for_artifacts(artifacts):
+        source_names.extend([disk.descriptor_name, *disk.extent_names, *disk.ctk_names])
+    if not source_names:
+        source_names = [artifacts.descriptor_name, *artifacts.extent_names, *artifacts.ctk_names]
     for name in source_names:
-        if name == imported_name or name not in artifacts.upload_files:
+        if name in imported_names or name not in artifacts.upload_files:
             continue
         datastore_path = core.datastore_path_join(target.datastore_name, target.datastore_folder, name)
         try:
@@ -985,6 +1462,7 @@ def build_vm_config_spec(
     disk_descriptor_name: str,
     mac_address_mode: str,
     preserved_mac_address: str,
+    disk_descriptor_names: Optional[Sequence[str]] = None,
 ) -> vim.vm.ConfigSpec:
     vm_info = artifacts.vm_info
     ovf = artifacts.ovf
@@ -1030,25 +1508,39 @@ def build_vm_config_spec(
     scsi_spec.device = scsi
     device_changes.append(scsi_spec)
 
-    disk = vim.vm.device.VirtualDisk()
-    disk.key = -101
-    disk.controllerKey = scsi.key
-    disk.unitNumber = 0
-    disk.capacityInKB = int(vm_info.get("disks", [{}])[0].get("capacity_bytes") or 0) // 1024
-    if disk.capacityInKB <= 0:
-        disk.capacityInKB = 1
-    disk.backing = vim.vm.device.VirtualDisk.FlatVer2BackingInfo()
-    disk.backing.fileName = core.datastore_path_join(
-        target.datastore_name,
-        target.datastore_folder,
-        disk_descriptor_name,
-    )
-    disk.backing.datastore = target.datastore
-    disk.backing.diskMode = "persistent"
-    disk_spec = vim.vm.device.VirtualDeviceSpec()
-    disk_spec.operation = vim.vm.device.VirtualDeviceSpec.Operation.add
-    disk_spec.device = disk
-    device_changes.append(disk_spec)
+    descriptor_names = list(disk_descriptor_names or [disk_descriptor_name])
+    disk_infos = list(vm_info.get("disks") or [])
+    disk_artifacts = restore_disks_for_artifacts(artifacts)
+    if disk_infos and len(descriptor_names) != len(disk_infos):
+        raise core.SafetyError(
+            f"Restore disk count mismatch: descriptors={len(descriptor_names)} metadata={len(disk_infos)}"
+        )
+    for disk_position, descriptor_name in enumerate(descriptor_names):
+        disk_info = disk_infos[disk_position] if disk_position < len(disk_infos) else {}
+        disk_artifact = disk_artifacts[disk_position] if disk_position < len(disk_artifacts) else None
+        capacity_bytes = int(
+            disk_info.get("capacity_bytes")
+            or (disk_artifact.capacity_bytes if disk_artifact is not None else 0)
+        )
+        disk = vim.vm.device.VirtualDisk()
+        disk.key = -101 - disk_position
+        disk.controllerKey = scsi.key
+        disk.unitNumber = disk_position
+        disk.capacityInKB = capacity_bytes // 1024
+        if disk.capacityInKB <= 0:
+            disk.capacityInKB = 1
+        disk.backing = vim.vm.device.VirtualDisk.FlatVer2BackingInfo()
+        disk.backing.fileName = core.datastore_path_join(
+            target.datastore_name,
+            target.datastore_folder,
+            descriptor_name,
+        )
+        disk.backing.datastore = target.datastore
+        disk.backing.diskMode = "persistent"
+        disk_spec = vim.vm.device.VirtualDeviceSpec()
+        disk_spec.operation = vim.vm.device.VirtualDeviceSpec.Operation.add
+        disk_spec.device = disk
+        device_changes.append(disk_spec)
 
     if add_network and target.network is not None:
         nic = build_nic(str(ovf.get("nic_subtype") or "VmxNet3"))
@@ -1108,10 +1600,15 @@ def resolve_restore_target(
     network_name = args.network or artifacts.ovf.get("network_name") or "VM Network"
     network = None if args.no_network else find_network(datacenter, network_name)
 
+    disks = restore_disks_for_artifacts(artifacts)
+    disk_infos = list(artifacts.vm_info.get("disks") or [])
+    descriptor_names = [disk.descriptor_name for disk in disks]
+    extent_names = [name for disk in disks for name in disk.extent_names]
     add("backup_dir", artifacts.backup_dir.exists(), str(artifacts.backup_dir))
     add("backup_target", True, f"source_vm={artifacts.manifest.get('target_vm')}")
-    add("vmdk_descriptor", bool(artifacts.descriptor_name), artifacts.descriptor_name)
-    add("vmdk_extents", bool(artifacts.extent_names), ", ".join(artifacts.extent_names) or "none")
+    add("vmdk_disk_count", bool(disks) and (not disk_infos or len(disks) == len(disk_infos)), f"disks={len(disks)}")
+    add("vmdk_descriptor", bool(descriptor_names), ", ".join(descriptor_names) or "none")
+    add("vmdk_extents", bool(extent_names), ", ".join(extent_names) or "none")
     add("vmdk_import", True, "backup VMDK will be converted to a thin vSphere disk")
     add("target_vm_absent", not vm_name_exists(session, new_name), f"name={new_name}")
     folder_exists = datastore_path_exists(session, datacenter, datastore, folder_name, config)
@@ -1140,7 +1637,7 @@ def resolve_restore_target(
         folder_name = validate_datastore_folder_name(raw or suggested_folder)
         folder_exists = datastore_path_exists(session, datacenter, datastore, folder_name, config)
     add("target_folder_absent", not folder_exists, core.datastore_path_join(datastore_name, folder_name))
-    upload_bytes = sum(backup_file_logical_size(artifacts.backup_dir, name) for name in artifacts.upload_files)
+    upload_bytes = sum(artifact_file_size(artifacts, name) for name in artifacts.upload_files)
     free_bytes = int(datastore.summary.freeSpace)
     required_bytes = upload_bytes * 2 + 1024**3
     add(
@@ -1218,11 +1715,14 @@ def run_restore(
     )
 
     try:
+        disk_artifacts = restore_disks_for_artifacts(artifacts)
+        if not disk_artifacts:
+            raise core.SafetyError("No restorable virtual disks found")
         for name in artifacts.upload_files:
-            local_path = find_file_case_sensitive(artifacts.backup_dir, name, hydrate_delta=True)
+            local_path = artifact_source_path(artifacts, name)
             if local_path is None:
                 raise core.SafetyError(f"Upload file disappeared from backup: {name}")
-            if name == artifacts.descriptor_name:
+            if any(name == disk.descriptor_name for disk in disk_artifacts):
                 upload_vmdk_descriptor_for_import(
                     session=session,
                     config=config,
@@ -1243,8 +1743,18 @@ def run_restore(
                     remote_name=name,
                 )
 
-        imported_disk_name = import_uploaded_vmdk(session, config, artifacts, target, new_name)
-        cleanup_uploaded_import_sources(session, config, artifacts, target, imported_disk_name)
+        imported_disk_names = [
+            import_uploaded_vmdk(
+                session,
+                config,
+                artifacts,
+                target,
+                new_name,
+                disk=disk,
+            )
+            for disk in disk_artifacts
+        ]
+        cleanup_uploaded_import_sources(session, config, artifacts, target, imported_disk_names)
 
         spec = build_vm_config_spec(
             new_name=new_name,
@@ -1253,13 +1763,14 @@ def run_restore(
             connect_network=args.connect_network,
             add_network=not args.no_network,
             use_backup_nvram=args.use_backup_nvram,
-            disk_descriptor_name=imported_disk_name,
+            disk_descriptor_name=imported_disk_names[0],
             mac_address_mode=args.resolved_mac_address_mode,
             preserved_mac_address=args.resolved_mac_address,
+            disk_descriptor_names=imported_disk_names,
         )
         core.LOGGER.info("Creating restored VM %s", new_name)
         task = target.vm_folder.CreateVM_Task(config=spec, pool=target.resource_pool)
-        vm = core.wait_for_task(task, f"Create VM {new_name}", config.task_timeout_seconds)
+        vm = core.wait_for_task(task, f"Create VM {new_name}")
         if vm is None:
             matches = [candidate for candidate in session.all_vms() if candidate.name == new_name]
             if len(matches) != 1:
@@ -1269,24 +1780,29 @@ def run_restore(
         if args.power_on:
             core.LOGGER.info("Powering on restored VM %s", new_name)
             power_task = vm.PowerOnVM_Task()
-            core.wait_for_task(power_task, f"Power on VM {new_name}", config.task_timeout_seconds)
+            core.wait_for_task(power_task, f"Power on VM {new_name}")
 
         return vm
     except Exception:
         if not args.keep_failed:
             cleanup_failed_folder(session, target, config)
         raise
-    finally:
-        delta_storage.cleanup_hydrated_files(artifacts.backup_dir)
-
-
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Restore one verified vSphere backup under a new VM name")
     parser.add_argument("--config", default=DEFAULT_CONFIG, help=f"Path to credentials.env/config.env. Default: {DEFAULT_CONFIG}")
-    parser.add_argument("--backup-root", default="backups", help="Root directory for interactive restore-point discovery")
+    parser.add_argument(
+        "--backup-root",
+        default=str(core.DEFAULT_OUTPUT_DIR),
+        help=f"Root directory for interactive restore-point discovery (default: {core.DEFAULT_OUTPUT_DIR})",
+    )
     parser.add_argument("--list-backups", action="store_true", help="List available restore points and exit")
     parser.add_argument(
         "--list-backup-paths",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--interactive",
         action="store_true",
         help=argparse.SUPPRESS,
     )
@@ -1322,6 +1838,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     args = parser.parse_args(argv)
     core.setup_logging(verbose=args.verbose)
 
+    materialization_tmp = None
     try:
         backup_root = resolve_local_path(args.backup_root)
         if args.list_backups or args.list_backup_paths:
@@ -1335,13 +1852,48 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
         backup_dir = resolve_local_path(args.backup_dir) if args.backup_dir else select_restore_point_interactive(backup_root)
         new_name = validate_vm_display_name(args.new_name or prompt_new_vm_name(backup_dir))
-        artifacts = load_backup_artifacts(backup_dir, skip_hash=args.skip_hash_check)
+        core.LOGGER.info(
+            "Restore gestartet: Quelle=%s, Ziel-VM=%s",
+            backup_dir,
+            new_name,
+        )
+        print(f"Restore gestartet: {backup_dir.name} -> {new_name}")
         config = core.load_config(args.config)
-        with core.VSphereSession(config) as session:
-            target, checks = resolve_restore_target(session, config, artifacts, args, new_name)
+        if args.interactive:
+            prompt_artifacts = load_restore_prompt_artifacts(backup_dir)
+            with core.VSphereSession(config) as selection_session:
+                target_options = collect_interactive_target_options(selection_session)
+            prompt_interactive_restore_options(args, prompt_artifacts, target_options)
+            prompt_interactive_restore_folder(args, config, new_name)
+
+            # MAC selection only uses local backup metadata and must happen
+            # before the long materialization as well.
+            mac_mode, mac_address = resolve_mac_address_mode(args, prompt_artifacts)
+            args.resolved_mac_address_mode = mac_mode
+            args.resolved_mac_address = mac_address
+
+            if not args.dry_run:
+                print("Alle Restore-Einstellungen sind festgelegt.")
+                print("Nach der Bestätigung beginnt die zeitaufwendige VMDK-Aufbereitung.")
+                confirm_restore(new_name, args)
+                # Prevent any later safety prompt after materialization. The
+                # typed confirmation above has already been completed.
+                args.yes = True
+
+        print("Backup wird geprueft und die VMDK-/CBT-Kette wird vorbereitet; Fortschritt folgt im Terminal.")
+        materialization_tmp = create_restore_materialization_tmp(backup_dir)
+        artifacts = load_backup_artifacts(
+            backup_dir,
+            skip_hash=args.skip_hash_check,
+            materialization_root=Path(materialization_tmp.name),
+        )
+        if not args.interactive:
             mac_mode, mac_address = resolve_mac_address_mode(args, artifacts)
             args.resolved_mac_address_mode = mac_mode
             args.resolved_mac_address = mac_address
+
+        with core.VSphereSession(config) as session:
+            target, checks = resolve_restore_target(session, config, artifacts, args, new_name)
             checks.append(
                 {
                     "name": "mac_address",
@@ -1389,6 +1941,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         core.LOGGER.error("Restore command failed: %s", exc, exc_info=args.verbose)
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
+    finally:
+        if materialization_tmp is not None:
+            materialization_tmp.cleanup()
 
 
 if __name__ == "__main__":

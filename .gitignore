@@ -29,3 +29,4 @@ __pycache__/
 vendor/vddk/
 VMware-vix-disklib-*.tar.gz
 vmware-vix-disklib-*.torrent
+VMware-vix-disklib-*/

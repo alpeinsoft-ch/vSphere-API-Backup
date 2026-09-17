@@ -53,6 +53,7 @@ from restore_vm_backup import (
     BackupArtifacts,
     adapter_type_for_import,
     alternate_datastore_folder_names,
+    restore_materialization_parent,
     discover_restore_points,
     format_restore_point_table,
     format_restore_vm_table,
@@ -848,6 +849,27 @@ class SafetyValidationTests(unittest.TestCase):
     def test_restore_alternate_folder_names_add_numeric_suffix(self):
         names = list(alternate_datastore_folder_names("DocuSign_Restore", max_attempts=4))
         self.assertEqual(names, ["DocuSign_Restore_2", "DocuSign_Restore_3", "DocuSign_Restore_4"])
+
+    def test_restore_materialization_uses_backup_volume_by_default(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            backup_dir = Path(tmp) / "Backup" / "DocuSign" / "delta_0003"
+            with patch.dict("restore_vm_backup.os.environ", {}, clear=True):
+                self.assertEqual(
+                    restore_materialization_parent(backup_dir),
+                    Path(tmp) / "Backup" / ".restore-tmp",
+                )
+
+    def test_restore_materialization_honors_explicit_workspace(self):
+        backup_dir = Path("/srv/Backup/DocuSign/delta_0003")
+        with patch.dict(
+            "restore_vm_backup.os.environ",
+            {"VSPHERE_RESTORE_TMPDIR": "/var/tmp/vsphere-restore"},
+            clear=True,
+        ):
+            self.assertEqual(
+                restore_materialization_parent(backup_dir),
+                Path("/var/tmp/vsphere-restore"),
+            )
 
     def test_restore_vmdk_descriptor_parsing(self):
         descriptor = '\n'.join(

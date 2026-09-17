@@ -3,6 +3,10 @@ set -Eeuo pipefail
 
 BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TARGET_DIR="$BASE_DIR/vendor/vddk"
+PYTHON_BIN="${PYTHON_BIN:-python3}"
+if [ -x "$BASE_DIR/.venv/bin/python" ]; then
+  PYTHON_BIN="$BASE_DIR/.venv/bin/python"
+fi
 
 usage() {
   echo "Usage: $0 /path/to/VMware-vix-disklib-*.x86_64.tar.gz" >&2
@@ -64,7 +68,7 @@ echo "  $TARGET_DIR"
 echo "VixDiskLib:"
 echo "  $LIBRARY"
 
-VDDK_LIBRARY="$LIBRARY" python3 - <<'PY'
+VDDK_LIBRARY="$LIBRARY" "$PYTHON_BIN" - <<'PY'
 import safe_vsphere_backup as core
 
 status = core.vddk_backend_status()

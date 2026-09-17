@@ -10,10 +10,12 @@ from __future__ import annotations
 import ctypes
 import hashlib
 import json
+import logging
 import os
 import re
 import shutil
 import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -37,6 +39,9 @@ DEFAULT_READ_CHUNK_BYTES = 4 * 1024 * 1024
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+LOGGER = logging.getLogger("vsphere_api_backup")
+PROGRESS_INTERVAL_BYTES = 1 * 1024**3
+PROGRESS_INTERVAL_SECONDS = 30
 
 
 class CBTStorageError(RuntimeError):
@@ -100,8 +105,19 @@ def has_cbt_storage(backup_dir: Path, manifest: Optional[Dict[str, Any]] = None)
     return bool((manifest.get("cbt_storage") or {}).get("manifest") or manifest_path(backup_dir).exists())
 
 
-def hydrated_cbt_dir(backup_dir: Path) -> Path:
-    return backup_dir / delta_storage.HYDRATED_DIRNAME / CBT_HYDRATED_SUBDIR
+def hydrated_cbt_dir(backup_dir: Path, materialization_root: Optional[Path] = None) -> Path:
+    """Return the directory used for locally materialized CBT disks.
+
+    The historic default keeps the old location for callers outside the
+    restore command.  The restore command passes a temporary root so that
+    materialization never creates files inside the backup chain itself.
+    """
+    if materialization_root is None:
+        return backup_dir / delta_storage.HYDRATED_DIRNAME / CBT_HYDRATED_SUBDIR
+    root = Path(materialization_root).expanduser().resolve()
+    vm_name = safe_file_name(backup_dir.parent.name or "backup")
+    run_name = safe_file_name(backup_dir.name or "run")
+    return root / vm_name / run_name / CBT_HYDRATED_SUBDIR
 
 
 def find_materialized_file(backup_dir: Path, name: str) -> Optional[Path]:
@@ -266,7 +282,12 @@ def probe_vddk(library_path: str = "") -> Dict[str, Any]:
 class VddkLibrary:
     def __init__(self, library_path: str):
         self.library_path = str(Path(library_path).resolve())
-        self.lib_dir = str(Path(self.library_path).parent)
+        library_dir = Path(self.library_path).parent
+        # VixDiskLib_InitEx expects the VDDK installation root.  Passing the
+        # lib64 directory makes it search for lib64/libdiskLibPlugin.so.
+        self.lib_dir = str(
+            library_dir.parent if library_dir.name in {"lib", "lib64"} else library_dir
+        )
         self.lib = ctypes.CDLL(self.library_path)
         self._configure_functions()
         err = self.lib.VixDiskLib_InitEx(
@@ -371,6 +392,7 @@ class VddkLibrary:
         vm_moref: str,
         snapshot_moref: str,
         transport_modes: str = "",
+        thumbprint: str = "",
     ) -> "VddkConnection":
         return VddkConnection.remote(
             self,
@@ -381,6 +403,32 @@ class VddkLibrary:
             vm_moref=vm_moref,
             snapshot_moref=snapshot_moref,
             transport_modes=transport_modes,
+            thumbprint=thumbprint,
+        )
+
+    def prepare_remote(
+        self,
+        host: str,
+        user: str,
+        password: str,
+        port: int,
+        vm_moref: str,
+        thumbprint: str = "",
+    ) -> "VddkConnection":
+        """Prepare a remote VM before its vSphere snapshot is created.
+
+        VDDK requires PrepareForAccess to happen before snapshot creation. The
+        returned object keeps the prepared connection parameters alive and can
+        be connected to the newly-created snapshot afterwards.
+        """
+        return VddkConnection.prepare_remote(
+            self,
+            host=host,
+            user=user,
+            password=password,
+            port=port,
+            vm_moref=vm_moref,
+            thumbprint=thumbprint,
         )
 
     def open_local(self) -> "VddkConnection":
@@ -420,6 +468,37 @@ class VddkConnection:
         vm_moref: str,
         snapshot_moref: str,
         transport_modes: str = "",
+        thumbprint: str = "",
+    ) -> "VddkConnection":
+        prepared_connection = cls.prepare_remote(
+            vddk,
+            host=host,
+            user=user,
+            password=password,
+            port=port,
+            vm_moref=vm_moref,
+            thumbprint=thumbprint,
+        )
+        try:
+            prepared_connection.connect_snapshot(snapshot_moref, transport_modes)
+            return prepared_connection
+        except Exception:
+            try:
+                prepared_connection.close()
+            except Exception:
+                pass
+            raise
+
+    @classmethod
+    def prepare_remote(
+        cls,
+        vddk: VddkLibrary,
+        host: str,
+        user: str,
+        password: str,
+        port: int,
+        vm_moref: str,
+        thumbprint: str = "",
     ) -> "VddkConnection":
         params = vddk.lib.VixDiskLib_AllocateConnectParams()
         if not params:
@@ -434,9 +513,13 @@ class VddkConnection:
         try:
             params.contents.vmxSpec = keep(f"moref={vm_moref}")
             params.contents.serverName = keep(host)
-            thumbprint = os.environ.get("VDDK_THUMBPRINT") or os.environ.get("VIXDISKLIB_THUMBPRINT") or ""
-            if thumbprint:
-                params.contents.thumbPrint = keep(thumbprint)
+            configured_thumbprint = (
+                str(thumbprint).strip()
+                or os.environ.get("VDDK_THUMBPRINT", "").strip()
+                or os.environ.get("VIXDISKLIB_THUMBPRINT", "").strip()
+            )
+            if configured_thumbprint:
+                params.contents.thumbPrint = keep(configured_thumbprint)
             params.contents.credType = VIXDISKLIB_CRED_UID
             params.contents.creds.uid.userName = keep(user)
             params.contents.creds.uid.password = keep(password)
@@ -448,18 +531,13 @@ class VddkConnection:
             err = vddk.lib.VixDiskLib_PrepareForAccess(params, identity)
             vddk.check(err, "VixDiskLib_PrepareForAccess")
             prepared = True
-
-            connection = ctypes.c_void_p()
-            modes = transport_modes or os.environ.get("VDDK_TRANSPORT_MODES") or DEFAULT_TRANSPORT_MODES
-            err = vddk.lib.VixDiskLib_ConnectEx(
+            return cls(
+                vddk,
                 params,
-                ctypes.c_char(1),
-                keep(snapshot_moref),
-                keep(modes),
-                ctypes.byref(connection),
+                ctypes.c_void_p(),
+                keepalive=keepalive,
+                prepared=prepared,
             )
-            vddk.check(err, "VixDiskLib_ConnectEx")
-            return cls(vddk, params, connection, keepalive=keepalive, prepared=prepared)
         except Exception:
             try:
                 vddk.lib.VixDiskLib_EndAccess(params, b"vSphere-API-Bakup")
@@ -468,19 +546,64 @@ class VddkConnection:
             vddk.lib.VixDiskLib_FreeConnectParams(params)
             raise
 
-    def close(self) -> None:
-        if self.params:
-            if self.prepared:
-                err = self.vddk.lib.VixDiskLib_EndAccess(self.params, b"vSphere-API-Bakup")
-                self.prepared = False
-                self.vddk.check(err, "VixDiskLib_EndAccess")
+    def connect_snapshot(self, snapshot_moref: str, transport_modes: str = "") -> None:
+        """Connect the prepared access object to a specific VM snapshot."""
+        if not self.params:
+            raise VddkError("VDDK connection parameters are no longer available")
+        if self.connection:
+            raise VddkError("VDDK connection is already connected")
+        if not snapshot_moref:
+            raise VddkError("Snapshot MoRef is required for VixDiskLib_ConnectEx")
+
+        keepalive_value = str(snapshot_moref).encode("utf-8")
+        self.keepalive.append(keepalive_value)
+        modes = transport_modes or os.environ.get("VDDK_TRANSPORT_MODES") or DEFAULT_TRANSPORT_MODES
+        modes_value = str(modes).encode("utf-8")
+        self.keepalive.append(modes_value)
+        connection = ctypes.c_void_p()
+        err = self.vddk.lib.VixDiskLib_ConnectEx(
+            self.params,
+            ctypes.c_char(1),
+            keepalive_value,
+            modes_value,
+            ctypes.byref(connection),
+        )
+        self.vddk.check(err, "VixDiskLib_ConnectEx")
+        self.connection = connection
+
+    def disconnect(self) -> None:
         if self.connection:
             err = self.vddk.lib.VixDiskLib_Disconnect(self.connection)
             self.connection = ctypes.c_void_p()
             self.vddk.check(err, "VixDiskLib_Disconnect")
+
+    def end_access(self) -> None:
+        if self.params and self.prepared:
+            err = self.vddk.lib.VixDiskLib_EndAccess(self.params, b"vSphere-API-Bakup")
+            self.prepared = False
+            self.vddk.check(err, "VixDiskLib_EndAccess")
+
+    def close(self) -> None:
+        """Disconnect and release access parameters.
+
+        Callers using a VM snapshot must delete that snapshot between
+        disconnect() and end_access().
+        """
+        first_error: Optional[BaseException] = None
+        try:
+            self.disconnect()
+        except Exception as exc:
+            first_error = exc
+        try:
+            self.end_access()
+        except Exception as exc:
+            if first_error is None:
+                first_error = exc
         if self.params:
             self.vddk.lib.VixDiskLib_FreeConnectParams(self.params)
             self.params = None
+        if first_error is not None:
+            raise first_error
 
     def __enter__(self) -> "VddkConnection":
         return self
@@ -717,6 +840,111 @@ def select_descriptor_for_disk(backup_dir: Path, disk: Dict[str, Any]) -> Tuple[
     raise CBTStorageError(f"No VMDK descriptor found in baseline backup: {backup_dir}")
 
 
+def select_stream_optimized_file(
+    backup_dir: Path,
+    disk: Dict[str, Any],
+    manifest: Optional[Dict[str, Any]] = None,
+) -> Path:
+    """Select a stream-optimized VMDK exported by an HttpNfcLease.
+
+    A normal HttpNfcLease export records disk files as ``disk-0.vmdk``,
+    ``disk-1.vmdk``, ... without a local descriptor/extent pair.  The
+    manifest's device key ends in the zero-based controller unit number, so
+    it is a reliable mapping for multi-disk exports.  The list order remains
+    a fallback for older manifests without that key.
+    """
+    backup_dir = backup_dir.expanduser().resolve()
+    manifest = manifest if manifest is not None else read_json(backup_dir / "backup_manifest.json")
+    disk_key = str(disk.get("disk_key") or disk.get("key") or "")
+    try:
+        disk_index = int(disk.get("disk_index") or 0)
+    except (TypeError, ValueError):
+        disk_index = 0
+
+    candidates: List[Tuple[int, int, Path]] = []
+    vmdk_position = 0
+    for item_position, item in enumerate(manifest.get("files", []) or []):
+        name = str(item.get("name") or "")
+        if not name.lower().endswith(".vmdk") or item.get("vmdk_role") in {"descriptor", "extent"}:
+            continue
+        try:
+            path = backup_dir / safe_file_name(name)
+        except Exception:
+            continue
+        if not path.exists():
+            continue
+
+        score = 0
+        if disk_key and str(item.get("disk_key") or "") == disk_key:
+            score += 100
+        try:
+            if disk_index and int(item.get("disk_index") or 0) == disk_index:
+                score += 90
+        except (TypeError, ValueError):
+            pass
+        device_key = str(item.get("device_key") or "")
+        if disk_index:
+            match = re.search(r":(\d+)$", device_key)
+            if match and int(match.group(1)) == disk_index - 1:
+                score += 80
+        candidates.append((score, -vmdk_position, path))
+        vmdk_position += 1
+
+    if not candidates:
+        raise CBTStorageError(f"No stream-optimized VMDK file found in backup: {backup_dir}")
+
+    candidates.sort(reverse=True)
+    return candidates[0][2]
+
+
+def materialize_stream_optimized_vmdk(
+    backup_dir: Path,
+    disk: Dict[str, Any],
+    output_dir: Path,
+    manifest: Optional[Dict[str, Any]] = None,
+    library_path: str = "",
+) -> Dict[str, Any]:
+    """Convert one stream-optimized VMDK into a local descriptor/flat pair."""
+    backup_dir = backup_dir.expanduser().resolve()
+    output_dir = output_dir.expanduser().resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    source_path = select_stream_optimized_file(backup_dir, disk, manifest=manifest)
+    disk_index = int(disk.get("disk_index") or 1)
+    capacity_bytes = int(disk.get("capacity_bytes") or 0)
+    if capacity_bytes <= 0:
+        raise CBTStorageError(f"Missing stream-optimized disk capacity for {source_path}")
+
+    extent_name = f"stream-disk{disk_index}-flat.vmdk"
+    descriptor_name = f"stream-disk{disk_index}.vmdk"
+    extent_path = output_dir / extent_name
+    descriptor_path = output_dir / descriptor_name
+    if not extent_path.exists() or extent_path.stat().st_size != capacity_bytes:
+        LOGGER.info(
+            "Restore: materialisiere VMDK %s nach %s (%.2f GiB)",
+            source_path,
+            extent_path,
+            capacity_bytes / 1024**3,
+        )
+        result = read_local_vmdk_to_flat(source_path, extent_path, library_path=library_path)
+        if int(result.get("bytes") or 0) != capacity_bytes:
+            raise CBTStorageError(
+                f"Materialized stream-optimized VMDK size mismatch for {source_path.name}: "
+                f"expected={capacity_bytes} actual={result.get('bytes')}"
+            )
+    adapter_type = str(disk.get("adapter_type") or "lsilogic")
+    if not descriptor_path.exists():
+        write_flat_vmdk_descriptor(descriptor_path, extent_name, capacity_bytes, adapter_type)
+    return {
+        "source_path": str(source_path),
+        "descriptor_path": str(descriptor_path),
+        "extent_path": str(extent_path),
+        "descriptor_name": descriptor_name,
+        "extent_name": extent_name,
+        "capacity_bytes": capacity_bytes,
+        "adapter_type": adapter_type,
+    }
+
+
 def prepare_local_vmdk_source(backup_dir: Path, disk: Dict[str, Any], work_dir: Path) -> Tuple[Path, str]:
     descriptor_path, descriptor_text, extent_names = select_descriptor_for_disk(backup_dir, disk)
     adapter_type = parse_vmdk_adapter_type(descriptor_text)
@@ -758,8 +986,17 @@ def read_local_vmdk_to_flat(
     with vddk.open_local() as connection, connection.open_disk(str(descriptor_path)) as disk, tmp.open("wb") as output:
         info = disk.info()
         total_sectors = int(info["capacity_sectors"])
+        total_bytes = total_sectors * SECTOR_SIZE
+        LOGGER.info(
+            "Restore-Fortschritt gestartet: %s -> %s (%.2f GiB)",
+            descriptor_path,
+            target_flat,
+            total_bytes / 1024**3,
+        )
         sector_cursor = 0
         sectors_per_read = max(1, chunk_bytes // SECTOR_SIZE)
+        next_report_bytes = PROGRESS_INTERVAL_BYTES
+        last_report_at = time.monotonic()
         while sector_cursor < total_sectors:
             sectors = min(sectors_per_read, total_sectors - sector_cursor)
             data = disk.read_sectors(sector_cursor, sectors)
@@ -767,7 +1004,25 @@ def read_local_vmdk_to_flat(
             digest.update(data)
             bytes_written += len(data)
             sector_cursor += sectors
+            now = time.monotonic()
+            if bytes_written >= next_report_bytes or now - last_report_at >= PROGRESS_INTERVAL_SECONDS:
+                percent = (bytes_written / total_bytes * 100) if total_bytes else 100.0
+                LOGGER.info(
+                    "Restore-Fortschritt: %.2f/%.2f GiB (%.1f%%) -> %s",
+                    bytes_written / 1024**3,
+                    total_bytes / 1024**3,
+                    percent,
+                    target_flat.name,
+                )
+                while next_report_bytes <= bytes_written:
+                    next_report_bytes += PROGRESS_INTERVAL_BYTES
+                last_report_at = now
     tmp.replace(target_flat)
+    LOGGER.info(
+        "Restore-Fortschritt abgeschlossen: %s (%.2f GiB)",
+        target_flat,
+        bytes_written / 1024**3,
+    )
     return {"bytes": bytes_written, "sha256": digest.hexdigest()}
 
 
@@ -803,29 +1058,58 @@ def materialize_baseline_flat(
     disk: Dict[str, Any],
     output_dir: Path,
     library_path: str = "",
+    materialization_root: Optional[Path] = None,
 ) -> Tuple[Path, str]:
     backup_dir = backup_dir.expanduser().resolve()
     cbt_manifest = load_cbt_manifest(backup_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     if cbt_manifest:
-        materialized = ensure_materialized_vmdks(backup_dir, library_path=library_path)
+        materialized = ensure_materialized_vmdks(
+            backup_dir,
+            library_path=library_path,
+            materialization_root=materialization_root,
+        )
         entry = materialized_disk_entry_for(materialized, disk)
         return Path(entry["extent_path"]), str(entry.get("adapter_type") or "lsilogic")
 
-    source_dir = output_dir / "source"
-    descriptor_path, adapter_type = prepare_local_vmdk_source(backup_dir, disk, source_dir)
     flat_name = f"baseline-{safe_file_name(str(disk.get('disk_index') or '1'))}-flat.vmdk"
     flat_path = output_dir / flat_name
     if flat_path.exists() and flat_path.stat().st_size == int(disk.get("capacity_bytes") or 0):
+        return flat_path, str(disk.get("adapter_type") or "lsilogic")
+
+    source_dir = output_dir / "source"
+    try:
+        descriptor_path, adapter_type = prepare_local_vmdk_source(backup_dir, disk, source_dir)
+        read_local_vmdk_to_flat(descriptor_path, flat_path, library_path=library_path)
         return flat_path, adapter_type
-    read_local_vmdk_to_flat(descriptor_path, flat_path, library_path=library_path)
-    return flat_path, adapter_type
+    except CBTStorageError as descriptor_error:
+        # HttpNfcLease full exports are stream-optimized VMDKs and do not have
+        # a small descriptor file.  VDDK can read them directly, after which
+        # the restore path uses the generated flat representation.
+        try:
+            materialized = materialize_stream_optimized_vmdk(
+                backup_dir,
+                disk,
+                output_dir,
+                library_path=library_path,
+            )
+        except Exception as stream_error:
+            raise CBTStorageError(
+                f"Baseline has no VMDK descriptor and stream-optimized "
+                f"materialization failed: {stream_error}"
+            ) from stream_error
+        return Path(materialized["extent_path"]), str(materialized["adapter_type"])
 
 
 def apply_patch_file(base_flat: Path, patch_file: Path, areas: List[Dict[str, Any]], target_flat: Path) -> Dict[str, Any]:
     target_flat.parent.mkdir(parents=True, exist_ok=True)
     if target_flat.exists():
         target_flat.unlink()
+    LOGGER.info(
+        "Restore: CBT-Patch wird angewendet (%s, %d Bereich(e))",
+        patch_file.name,
+        len(areas),
+    )
     shutil.copyfile(base_flat, target_flat)
     digest = hashlib.sha256()
     with patch_file.open("rb") as patch, target_flat.open("r+b") as target:
@@ -847,6 +1131,7 @@ def apply_patch_file(base_flat: Path, patch_file: Path, areas: List[Dict[str, An
     with target_flat.open("rb") as handle:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
+    LOGGER.info("Restore: CBT-Patch fertig, Zieldatei %s (%.2f GiB)", target_flat, target_flat.stat().st_size / 1024**3)
     return {"bytes": target_flat.stat().st_size, "sha256": digest.hexdigest()}
 
 
@@ -854,13 +1139,15 @@ def ensure_materialized_vmdks(
     backup_dir: Path,
     manifest: Optional[Dict[str, Any]] = None,
     library_path: str = "",
+    materialization_root: Optional[Path] = None,
 ) -> Dict[str, Any]:
     backup_dir = backup_dir.expanduser().resolve()
     cbt_manifest = load_cbt_manifest(backup_dir)
     if not cbt_manifest:
         raise CBTStorageError(f"No CBT manifest found: {backup_dir}")
-    target_dir = hydrated_cbt_dir(backup_dir)
+    target_dir = hydrated_cbt_dir(backup_dir, materialization_root=materialization_root)
     target_dir.mkdir(parents=True, exist_ok=True)
+    LOGGER.info("Restore: CBT-Kette wird vorbereitet: %s", backup_dir)
     raw_previous_dir = str(cbt_manifest.get("previous_dir") or "")
     if not raw_previous_dir:
         raise CBTStorageError("CBT manifest has no previous_dir baseline")
@@ -879,15 +1166,22 @@ def ensure_materialized_vmdks(
         capacity_bytes = int(disk.get("capacity_bytes") or 0)
         adapter_type = str(disk.get("adapter_type") or "lsilogic")
         if extent_path.exists() and extent_path.stat().st_size == capacity_bytes and descriptor_path.exists():
+            LOGGER.info("Restore: bereits materialisierte Disk wird wiederverwendet: %s", extent_path)
             result_disks.append({**disk, "descriptor_path": str(descriptor_path), "extent_path": str(extent_path)})
             continue
 
         baseline_dir = target_dir / f"baseline-{disk.get('disk_index', 1)}"
+        LOGGER.info(
+            "Restore: Baseline fuer Disk %s wird materialisiert (%.2f GiB)",
+            disk.get("disk_index", 1),
+            capacity_bytes / 1024**3,
+        )
         base_flat, base_adapter_type = materialize_baseline_flat(
             previous_dir,
             disk,
             baseline_dir,
             library_path=library_path,
+            materialization_root=materialization_root,
         )
         adapter_type = adapter_type or base_adapter_type
         patch_file = backup_dir / safe_file_name(str(disk.get("patch_file") or ""))
@@ -895,6 +1189,7 @@ def ensure_materialized_vmdks(
             raise CBTStorageError(f"CBT patch file not found: {patch_file}")
         apply_patch_file(base_flat, patch_file, list(disk.get("areas") or []), extent_path)
         write_flat_vmdk_descriptor(descriptor_path, extent_name, capacity_bytes, adapter_type)
+        LOGGER.info("Restore: Disk %s fertig materialisiert: %s", disk.get("disk_index", 1), extent_path)
         result_disks.append(
             {
                 **disk,

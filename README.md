@@ -1,5 +1,8 @@
 # vSphere API Backup
 
+Vor jedem Backup zuerst lesen: [`VOR_BACKUP_LESEN.md`](../VOR_BACKUP_LESEN.md).
+Der normale Startbefehl bleibt exakt `./start_select_vm_backup.sh`.
+
 Dieses Verzeichnis enthaelt ein neues, getrenntes vSphere/vCenter-Backup-System.
 Es uebernimmt Ablauf und Sicherheitsmodell der Vorlage `docsign_esxi_api_backup`,
 ist aber auf vSphere/vCenter-Konfiguration und vCenter-REST-Inventory
@@ -58,7 +61,7 @@ VSPHERE_SERVER=vcsa.example.local
 VSPHERE_USER=backup-user@example.local
 VSPHERE_PASSWORD=CHANGE_ME
 VSPHERE_TARGET_VM=<geschuetzte-vm>
-BACKUP_OUTPUT_DIR=./backups
+BACKUP_OUTPUT_DIR=/srv/samba/Backup-Alpein/Backup
 ```
 
 `VSPHERE_SERVER` darf als Hostname, `host:port` oder `https://host:port`
