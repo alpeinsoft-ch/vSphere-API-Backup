@@ -1,0 +1,29 @@
+vSphere-API-Backup - Systemanalyse
+
+Stand dieses neuen Ordners:
+
+1. Die Vorlage upstream_vsphere_backup_template wurde ohne alte Backups, Logs,
+   Python-Cache und alte lokale Config kopiert.
+2. Die Kernlogik wurde auf safe_vsphere_backup.py und backup_vsphere.py
+   umgestellt.
+3. Login-Daten liegen in credentials.env.
+4. vCenter REST wird fuer Session und Inventory genutzt:
+   - /api/session
+   - /api/vcenter/vm
+   - Fallbacks unter /rest/...
+5. Export und Restore verwenden weiterhin die vSphere Managed-Object API,
+   weil OVF/VMDK-Export, HttpNfcLease und Datastore-Operationen dort
+   bereitstehen.
+6. Der interaktive Backup-Pfad, Delta-Speicher und Restore-Pfad wurden aus der
+   Vorlage uebernommen und auf vSphere-Bezeichnungen angepasst.
+7. Der neue Ordner enthaelt keine produktiven Backup-Artefakte aus der Vorlage.
+
+Lokale Pruefung:
+
+- python3 -m py_compile *.py tests/test_safety.py
+- python3 -m unittest discover -s tests -v
+
+Ergebnis:
+
+- Historischer Stand dieser Notiz: 58 Tests erfolgreich.
+- Aktueller validierter Stand siehe docs/ANALYSE_UND_ANLEITUNG.md.

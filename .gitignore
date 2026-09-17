@@ -1,0 +1,32 @@
+# Local secrets and environment
+credentials.env
+config.env
+.env
+*.env.local
+
+# Runtime backup data and generated state
+backups/
+logs/
+.weekly_vm_backup.lock
+*.inprogress/
+*.failed/
+.delta_store/
+.restore_hydrated/
+
+# Local VM/vSphere inventory selections
+vm_backup_selection.txt
+vm_backup_selection.txt.bak-*
+crontab.bak-*
+
+# Python/runtime artifacts
+.venv/
+*.pyc
+__pycache__/
+.pytest_cache/
+
+# VMware VDDK is installed locally from the Broadcom/VMware archive.
+# Do not commit licensed binaries or downloaded archives.
+vendor/vddk/
+VMware-vix-disklib-*.tar.gz
+vmware-vix-disklib-*.torrent
+VMware-vix-disklib-*/
