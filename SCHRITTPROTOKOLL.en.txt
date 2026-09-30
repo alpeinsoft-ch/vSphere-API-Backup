@@ -1,0 +1,50 @@
+vSphere API Backup - change log
+
+English version of: SCHRITTPROTOKOLL.txt
+
+1. Target directory created:
+   <PROJECT_ROOT>
+
+2. Template copied:
+   Source: upstream_vsphere_backup_template
+   Included: Python code, shell starters, tests, and documentation.
+   Excluded: backups, logs, __pycache__, .venv, and old config.env.
+
+3. Files migrated:
+   - safe_esxi_backup.py -> safe_vsphere_backup.py
+   - backup_example.py -> backup_vsphere.py
+
+4. vSphere configuration introduced:
+   - credentials.env
+   - credentials.example.env
+   - config.example.env
+   - VSPHERE_SERVER, VSPHERE_USER, VSPHERE_PASSWORD
+   - VSPHERE_TARGET_VM
+
+5. API access adapted:
+   - REST login through /api/session.
+   - REST inventory through /api/vcenter/vm.
+   - Fallbacks through /rest/com/vmware/cis/session and /rest/vcenter/vm.
+   - Managed Object API retained for snapshots, export, HttpNfcLease, datastore,
+     and restore.
+
+6. Starters corrected:
+   - Default configuration is credentials.env.
+   - VSPHERE_CONFIG can select another path.
+   - Old hard-coded paths were removed.
+
+7. Documentation rewritten:
+   - README.md and README.en.md
+   - RUNBOOK.md and RUNBOOK.en.md
+   - ANALYSE_UND_KONZEPT.md and ANALYSE_UND_KONZEPT.en.md
+   - BACKUP_SYSTEM_ANALYSE_2026-06-29.txt and its English version
+   - docs/ANALYSE_UND_ANLEITUNG.md and its English version
+
+8. Local verification:
+   - python3 -m py_compile *.py tests/test_safety.py
+   - python3 -m unittest discover -s tests -v
+
+9. Result:
+   - Python compilation successful.
+   - Historical status of this log: 58 unit tests passed.
+   - See docs/ANALYSE_UND_ANLEITUNG.en.md for the latest validated status.

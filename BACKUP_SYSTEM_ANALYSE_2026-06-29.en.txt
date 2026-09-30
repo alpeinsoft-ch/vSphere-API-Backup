@@ -1,0 +1,30 @@
+vSphere API Backup - System analysis
+
+English version of: BACKUP_SYSTEM_ANALYSE_2026-06-29.txt
+
+Status of this new directory:
+
+1. The upstream_vsphere_backup_template was copied without old backups, logs,
+   Python cache, or old local configuration.
+2. The core logic was migrated to safe_vsphere_backup.py and
+   backup_vsphere.py.
+3. Login data is stored in credentials.env.
+4. vCenter REST is used for sessions and inventory:
+   - /api/session
+   - /api/vcenter/vm
+   - Fallbacks under /rest/...
+5. Export and restore continue to use the vSphere Managed Object API because
+   OVF/VMDK export, HttpNfcLease, and datastore operations are provided there.
+6. The interactive backup path, delta storage, and restore path were adopted
+   from the template and adapted to vSphere terminology.
+7. The new directory contains no production backup artifacts from the template.
+
+Local verification:
+
+- python3 -m py_compile *.py tests/test_safety.py
+- python3 -m unittest discover -s tests -v
+
+Result:
+
+- Historical status of this note: 58 tests passed.
+- See docs/ANALYSE_UND_ANLEITUNG.en.md for the latest validated status.

@@ -1,6 +1,12 @@
 # Runbook
 
-Vor jedem Lauf zuerst [`VOR_BACKUP_LESEN.md`](../VOR_BACKUP_LESEN.md) lesen.
+[English version](RUNBOOK.en.md)
+
+> **Entwickelt von:** Alpein Software Swiss AG<br>
+> **Programmiert von:** [Samuel Werner (Cyberwerner)](https://github.com/Cyberwerner4444)<br>
+> **Unterstützt von:** KI<br>
+> **Achtung:** WIPCODING-Inhalt
+
 Der normale Backup-Start erfolgt ausschließlich mit:
 
 ```bash
@@ -23,7 +29,7 @@ VSPHERE_SERVER=<vcenter-host-oder-url>
 VSPHERE_USER=<backup-user>
 VSPHERE_PASSWORD=<passwort>
 VSPHERE_TARGET_VM=<ziel-vm-fuer-den-geschuetzten-pfad>
-BACKUP_OUTPUT_DIR=/srv/samba/Backup-Alpein/Backup
+BACKUP_OUTPUT_DIR=/var/backups/vsphere
 ```
 
 ## 2. Abhaengigkeiten vorbereiten
@@ -108,9 +114,9 @@ bei gewuenschten VMs das fuehrende `# `.
 Der bisherige interaktive Delta-Pfad legt pro VM eine Kette an:
 
 ```text
-/srv/samba/Backup-Alpein/Backup/<VM>/full_0001
-/srv/samba/Backup-Alpein/Backup/<VM>/delta_0002
-/srv/samba/Backup-Alpein/Backup/<VM>/delta_0003
+/var/backups/vsphere/<VM>/full_0001
+/var/backups/vsphere/<VM>/delta_0002
+/var/backups/vsphere/<VM>/delta_0003
 ```
 
 `--backup-mode local-delta` ist lokaler Chunk-Dedupe nach einem normalen
@@ -146,14 +152,14 @@ eine CBT-Baseline entsteht.
 Manuelles Delta-Pack eines vorhandenen Backups:
 
 ```bash
-python3 backup_vsphere.py delta-pack /srv/samba/Backup-Alpein/Backup/<VM>/<lauf> --remove-originals
+python3 backup_vsphere.py delta-pack /var/backups/vsphere/<VM>/<lauf> --remove-originals
 ```
 
 ## 7. Verify
 
 ```bash
-python3 backup_vsphere.py verify /srv/samba/Backup-Alpein/Backup/<backup-ordner>
-./start_select_vm_backup.sh --verify /srv/samba/Backup-Alpein/Backup/<VM>/<lauf>
+python3 backup_vsphere.py verify /var/backups/vsphere/<backup-ordner>
+./start_select_vm_backup.sh --verify /var/backups/vsphere/<VM>/<lauf>
 ```
 
 ## 8. Restore
@@ -173,7 +179,7 @@ Nicht-interaktiv:
 
 ```bash
 ./start_restore_vm_backup.sh \
-  --backup-dir /srv/samba/Backup-Alpein/Backup/<VM>/<lauf> \
+  --backup-dir /var/backups/vsphere/<VM>/<lauf> \
   --new-name <neuer-vm-name> \
   --yes
 ```
@@ -182,7 +188,7 @@ Dry-Run:
 
 ```bash
 ./start_restore_vm_backup.sh \
-  --backup-dir /srv/samba/Backup-Alpein/Backup/<VM>/<lauf> \
+  --backup-dir /var/backups/vsphere/<VM>/<lauf> \
   --new-name <neuer-vm-name> \
   --dry-run
 ```

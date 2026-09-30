@@ -527,7 +527,7 @@ class VddkConnection:
             params.contents.nfcHostPort = int(os.environ.get("VDDK_NFC_HOST_PORT", "902"))
             params.contents.specType = VIXDISKLIB_SPEC_VMX
 
-            identity = keep("vSphere-API-Bakup")
+            identity = keep("vSphere-API-Backup")
             err = vddk.lib.VixDiskLib_PrepareForAccess(params, identity)
             vddk.check(err, "VixDiskLib_PrepareForAccess")
             prepared = True
@@ -540,7 +540,7 @@ class VddkConnection:
             )
         except Exception:
             try:
-                vddk.lib.VixDiskLib_EndAccess(params, b"vSphere-API-Bakup")
+                vddk.lib.VixDiskLib_EndAccess(params, b"vSphere-API-Backup")
             except Exception:
                 pass
             vddk.lib.VixDiskLib_FreeConnectParams(params)
@@ -579,7 +579,7 @@ class VddkConnection:
 
     def end_access(self) -> None:
         if self.params and self.prepared:
-            err = self.vddk.lib.VixDiskLib_EndAccess(self.params, b"vSphere-API-Bakup")
+            err = self.vddk.lib.VixDiskLib_EndAccess(self.params, b"vSphere-API-Backup")
             self.prepared = False
             self.vddk.check(err, "VixDiskLib_EndAccess")
 

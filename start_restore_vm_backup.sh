@@ -6,7 +6,7 @@ cd "$(dirname "$0")"
 PYTHON_BIN="python3"
 USING_VENV=0
 DEFAULT_CONFIG="${VSPHERE_CONFIG:-credentials.env}"
-BACKUP_ROOT="${BACKUP_OUTPUT_DIR:-/srv/samba/Backup-Alpein/Backup}"
+BACKUP_ROOT="${BACKUP_OUTPUT_DIR:-/var/backups/vsphere}"
 
 check_modules() {
   set +e

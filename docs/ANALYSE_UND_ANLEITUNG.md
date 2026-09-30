@@ -1,9 +1,16 @@
 # Analyse und Anleitung: vSphere API Backup
 
-Stand: 2026-08-31 UTC
+[English version](ANALYSE_UND_ANLEITUNG.en.md)
+
+> **Entwickelt von:** Alpein Software Swiss AG<br>
+> **Programmiert von:** [Samuel Werner (Cyberwerner)](https://github.com/Cyberwerner4444)<br>
+> **Unterstützt von:** KI<br>
+> **Achtung:** WIPCODING-Inhalt
+
+Stand: 2026-09-17 UTC
 
 Dieses Dokument beschreibt den aktuellen Zustand des Projekts
-`vSphere-API-Bakup`, den technischen Aufbau, den sicheren Betrieb und den
+`vSphere-API-Backup`, den technischen Aufbau, den sicheren Betrieb und den
 GitLab-Erstimport.
 
 ## 1. Kurzfazit
@@ -20,12 +27,12 @@ python3 -m py_compile *.py tests/test_safety.py
 python3 -m unittest discover -s tests -v
 ```
 
-Ergebnis am 2026-08-31: 69 Tests bestanden.
+Ergebnis am 2026-09-17: 71 Tests bestanden.
 
 Produktive Runtime-Daten gehoeren nicht ins GitLab-Repository:
 
 - `credentials.env`
-- `/srv/samba/Backup-Alpein/Backup/` (separates 5-TB-Backup-Dateisystem)
+- `/var/backups/vsphere/` (configured backup filesystem)
 - `logs/`
 - `vendor/vddk/`
 - VMware VDDK Archive
@@ -36,7 +43,7 @@ Produktive Runtime-Daten gehoeren nicht ins GitLab-Repository:
 Projektpfad:
 
 ```text
-/srv/shares/Backup-f/Backup-system/vSphere-API-Bakup
+<PROJECT_ROOT>
 ```
 
 Wichtige Dateien:
@@ -99,7 +106,7 @@ und Restore-Operationen keinen gleichwertigen reinen REST-Pfad bereitstellt.
 Ein Full Backup erzeugt einen vollstaendigen Wiederherstellungspunkt:
 
 ```text
-/srv/samba/Backup-Alpein/Backup/<VM>/full_0001/
+/var/backups/vsphere/<VM>/full_0001/
   backup_manifest.json
   *.ovf
   *.vmdk
@@ -120,11 +127,11 @@ lokalen Plattenplatz, reduziert aber nicht den initialen vSphere-Download.
 Typische Artefakte:
 
 ```text
-/srv/samba/Backup-Alpein/Backup/<VM>/delta_0002/
+/var/backups/vsphere/<VM>/delta_0002/
   backup_manifest.json
   delta_manifest.json
   README.txt
-/srv/samba/Backup-Alpein/Backup/<VM>/.delta_store/
+/var/backups/vsphere/<VM>/.delta_store/
   chunks/...
 ```
 
@@ -137,7 +144,7 @@ als Patch-Dateien gespeichert.
 Typische Artefakte:
 
 ```text
-/srv/samba/Backup-Alpein/Backup/<VM>/delta_0003/
+/var/backups/vsphere/<VM>/delta_0003/
   backup_manifest.json
   cbt_manifest.json
   *.cbtpatch
@@ -175,12 +182,12 @@ nano credentials.env
 Pflichtwerte:
 
 ```bash
-VSPHERE_SERVER=vcsa.example.local
+VSPHERE_SERVER=vcsa.example.invalid
 VSPHERE_PORT=443
-VSPHERE_USER=backup-user@example.local
+VSPHERE_USER=backup-user@example.invalid
 VSPHERE_PASSWORD=CHANGE_ME
 VSPHERE_TARGET_VM=CHANGE_ME_VM_NAME
-BACKUP_OUTPUT_DIR=/srv/samba/Backup-Alpein/Backup
+BACKUP_OUTPUT_DIR=/var/backups/vsphere
 ```
 
 Empfehlungen:
@@ -276,13 +283,13 @@ Optional mit Screen:
 Ein einzelner Wiederherstellungspunkt kann geprueft werden:
 
 ```bash
-python3 backup_vsphere.py verify /srv/samba/Backup-Alpein/Backup/<VM>/<lauf>
+python3 backup_vsphere.py verify /var/backups/vsphere/<VM>/<lauf>
 ```
 
 Oder ueber den Auswahl-Wrapper:
 
 ```bash
-./start_select_vm_backup.sh --verify /srv/samba/Backup-Alpein/Backup/<VM>/<lauf>
+./start_select_vm_backup.sh --verify /var/backups/vsphere/<VM>/<lauf>
 ```
 
 Bei Delta-/CBT-Backups prueft Verify auch die jeweils benoetigten Metadaten und
@@ -307,7 +314,7 @@ Dry-Run:
 
 ```bash
 ./start_restore_vm_backup.sh \
-  --backup-dir /srv/samba/Backup-Alpein/Backup/<VM>/<lauf> \
+  --backup-dir /var/backups/vsphere/<VM>/<lauf> \
   --new-name <neuer-vm-name> \
   --dry-run
 ```
@@ -316,7 +323,7 @@ Restore:
 
 ```bash
 ./start_restore_vm_backup.sh \
-  --backup-dir /srv/samba/Backup-Alpein/Backup/<VM>/<lauf> \
+  --backup-dir /var/backups/vsphere/<VM>/<lauf> \
   --new-name <neuer-vm-name> \
   --yes
 ```
@@ -363,7 +370,7 @@ vsphere-api-backup
 Remote:
 
 ```text
-https://git.hostwerk.ch/AlpeinSW/vsphere-api-backup.git
+https://git2.securium.ch/infrastructure/backup.git
 ```
 
 Vor dem ersten Commit pruefen:
@@ -381,14 +388,14 @@ git branch -M main
 git add .
 git status --short
 git commit -m "Initial import of vSphere API backup system"
-git remote add origin https://git.hostwerk.ch/AlpeinSW/vsphere-api-backup.git
+git remote add origin https://git2.securium.ch/infrastructure/backup.git
 git push -u origin main
 ```
 
 Nach dem Clone auf einem anderen System:
 
 ```bash
-git clone https://git.hostwerk.ch/AlpeinSW/vsphere-api-backup.git
+git clone https://git2.securium.ch/infrastructure/backup.git
 cd vsphere-api-backup
 # Debian/Ubuntu minimal: bei fehlendem ensurepip vorher python3-venv installieren.
 python3 -m venv .venv

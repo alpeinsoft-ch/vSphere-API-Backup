@@ -1,15 +1,22 @@
 # Analyse und Konzept
 
+[English version](ANALYSE_UND_KONZEPT.en.md)
+
+> **Entwickelt von:** Alpein Software Swiss AG<br>
+> **Programmiert von:** [Samuel Werner (Cyberwerner)](https://github.com/Cyberwerner4444)<br>
+> **Unterstützt von:** KI<br>
+> **Achtung:** WIPCODING-Inhalt
+
 ## Ausgangspunkt
 
-Die Vorlage `docsign_esxi_api_backup` wurde als konservatives VM-Backup-System
+Die Vorlage `upstream_vsphere_backup_template` wurde als konservatives VM-Backup-System
 uebernommen: Inventory, Preflight, temporaerer Snapshot fuer laufende VMs,
 Export, Manifest, Verify, lokaler Delta-/Dedupe-Speicher und Restore unter
 neuem Namen.
 
 ## Anpassung fuer vSphere/vCenter
 
-Das neue System heisst `vSphere-API-Bakup` und nutzt eine neue
+Das neue System heisst `vSphere-API-Backup` und nutzt eine neue
 Konfigurationsschicht:
 
 - `credentials.env` fuer Login-Daten.

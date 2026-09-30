@@ -1,16 +1,18 @@
-Schrittprotokoll vSphere-API-Bakup
+Schrittprotokoll vSphere-API-Backup
+
+English version: SCHRITTPROTOKOLL.en.txt
 
 1. Zielordner erstellt:
-   /srv/shares/Backup-f/Backup-system/vSphere-API-Bakup
+   <PROJECT_ROOT>
 
 2. Vorlage kopiert:
-   Quelle: docsign_esxi_api_backup
+   Quelle: upstream_vsphere_backup_template
    Uebernommen: Python-Code, Shell-Starter, Tests, Dokumentation.
    Ausgelassen: backups, logs, __pycache__, .venv, alte config.env.
 
 3. Dateien umgestellt:
    - safe_esxi_backup.py -> safe_vsphere_backup.py
-   - backup_docsign.py -> backup_vsphere.py
+   - backup_example.py -> backup_vsphere.py
 
 4. vSphere-Konfiguration eingefuehrt:
    - credentials.env

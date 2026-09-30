@@ -36,7 +36,7 @@ from pyVmomi import vim, vmodl
 import delta_storage
 import vddk_cbt
 
-DEFAULT_TARGET_VM_NAME = "DocuSign"
+DEFAULT_TARGET_VM_NAME = "ExampleVM"
 TARGET_VM_NAME = DEFAULT_TARGET_VM_NAME
 EXPECTED_CPU = 2
 EXPECTED_RAM_MB = 4096
@@ -48,10 +48,9 @@ REMOTE_TEMP_DIR = "vsphere_api_backup_tmp"
 SKIPPED_REMOVABLE_EXTENSIONS = {".iso", ".flp"}
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-# The dedicated 5-TB filesystem is mounted into the SMB share at this path.
-# Keep this absolute so every entry point uses the same storage even when it
-# is launched from a different working directory.
-DEFAULT_OUTPUT_DIR = Path("/srv/samba/Backup-Alpein/Backup")
+# Keep this absolute so every entry point uses the same configured backup
+# storage even when it is launched from a different working directory.
+DEFAULT_OUTPUT_DIR = Path("/var/backups/vsphere")
 DEFAULT_LOG_FILE = SCRIPT_DIR / "logs" / "vsphere_backup.log"
 DEFAULT_MIN_FREE_GB = 30.0
 DEFAULT_READ_TIMEOUT_SECONDS = 300
@@ -628,7 +627,7 @@ class VSphereSession:
             raise SafetyError(f"Multiple VMs named {TARGET_VM_NAME} found: {ids}")
         return matches[0]
 
-    def find_docsign_vm(self) -> vim.VirtualMachine:
+    def find_example_vm(self) -> vim.VirtualMachine:
         return self.find_target_vm()
 
 
@@ -923,7 +922,7 @@ def validate_target_vm(vm_info: Dict[str, Any], config: VSphereConfig) -> List[D
     return checks
 
 
-def validate_docsign_target(vm_info: Dict[str, Any], config: VSphereConfig) -> List[Dict[str, Any]]:
+def validate_example_target(vm_info: Dict[str, Any], config: VSphereConfig) -> List[Dict[str, Any]]:
     return validate_target_vm(vm_info, config)
 
 
@@ -2216,7 +2215,7 @@ def build_parser() -> argparse.ArgumentParser:
     backup = subparsers.add_parser("backup", parents=[common], help="Run live full backup for the configured target VM")
     backup.add_argument(
         "--confirm-vm",
-        "--confirm-docsign",
+        "--confirm-example",
         dest="confirm_vm",
         required=True,
         help="Required safety confirmation. Must be exactly the configured VSPHERE_TARGET_VM.",
@@ -2242,7 +2241,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     backup_delta.add_argument(
         "--confirm-vm",
-        "--confirm-docsign",
+        "--confirm-example",
         dest="confirm_vm",
         required=True,
         help="Required safety confirmation. Must be exactly the configured VSPHERE_TARGET_VM.",

@@ -27,7 +27,7 @@ from safe_vsphere_backup import (
     snapshot_copy_stem,
     task_state_if_available,
     transfer_http_nfc_lease_or_snapshot_copy,
-    validate_docsign_target,
+    validate_example_target,
     verify_backup_dir,
     wait_for_task_progress,
 )
@@ -79,9 +79,9 @@ from delta_storage import (
 
 def base_config():
     return VSphereConfig(
-        host="example.local",
+        host="example.invalid",
         user="backup",
-        password="secret",
+        password="TEST_PASSWORD",
         output_dir=Path("/tmp"),
         min_free_gb=0.01,
     )
@@ -98,7 +98,7 @@ def base_vm_info(**overrides):
         "num_cpu": 2,
         "memory_mb": 4096,
         "guest_full_name": "Other Linux",
-        "vmx_path": "[datastore1] DocuSign/DocuSign.vmx",
+        "vmx_path": "[datastore1] ExampleVM/ExampleVM.vmx",
         "change_tracking_enabled": False,
         "has_snapshot": False,
         "disks": [
@@ -107,7 +107,7 @@ def base_vm_info(**overrides):
                 "key": 2000,
                 "capacity_bytes": 25 * 1024**3,
                 "capacity_gb": 25.0,
-                "file_name": "[datastore1] DocuSign/DocuSign.vmdk",
+                "file_name": "[datastore1] ExampleVM/ExampleVM.vmdk",
                 "datastore": "datastore1",
                 "thin_provisioned": True,
                 "backing_type": "vim.vm.device.VirtualDisk.FlatVer2BackingInfo",
@@ -135,43 +135,43 @@ def sha256_bytes(data: bytes) -> str:
 
 
 class SafetyValidationTests(unittest.TestCase):
-    def test_expected_docsign_vm_passes(self):
-        checks = validate_docsign_target(base_vm_info(), base_config())
+    def test_expected_example_vm_passes(self):
+        checks = validate_example_target(base_vm_info(), base_config())
         self.assertTrue(checks_passed(checks), checks)
 
     def test_wrong_name_fails(self):
-        checks = validate_docsign_target(base_vm_info(name="OtherVM"), base_config())
+        checks = validate_example_target(base_vm_info(name="OtherVM"), base_config())
         self.assertFalse(checks_passed(checks))
 
     def test_powered_on_uses_snapshot_export_and_passes(self):
-        checks = validate_docsign_target(base_vm_info(power_state="poweredOn"), base_config())
+        checks = validate_example_target(base_vm_info(power_state="poweredOn"), base_config())
         self.assertTrue(checks_passed(checks), checks)
         self.assertEqual(backup_method_for_power_state("poweredOn"), "snapshot_export")
 
     def test_suspended_fails(self):
-        checks = validate_docsign_target(base_vm_info(power_state="suspended"), base_config())
+        checks = validate_example_target(base_vm_info(power_state="suspended"), base_config())
         self.assertFalse(checks_passed(checks))
 
     def test_existing_snapshot_fails(self):
-        checks = validate_docsign_target(base_vm_info(power_state="poweredOn", has_snapshot=True), base_config())
+        checks = validate_example_target(base_vm_info(power_state="poweredOn", has_snapshot=True), base_config())
         self.assertFalse(checks_passed(checks))
 
     def test_wrong_disk_size_fails(self):
         info = base_vm_info()
         info["disks"][0]["capacity_gb"] = 30.0
-        checks = validate_docsign_target(info, base_config())
+        checks = validate_example_target(info, base_config())
         self.assertFalse(checks_passed(checks))
 
     def test_optional_uuid_lock_fails_when_mismatch(self):
         cfg = VSphereConfig(
-            host="example.local",
+            host="example.invalid",
             user="backup",
-            password="secret",
+            password="TEST_PASSWORD",
             output_dir=Path("/tmp"),
             expected_instance_uuid="expected-uuid",
             min_free_gb=0.01,
         )
-        checks = validate_docsign_target(base_vm_info(instance_uuid="other-uuid"), cfg)
+        checks = validate_example_target(base_vm_info(instance_uuid="other-uuid"), cfg)
         self.assertFalse(checks_passed(checks))
 
     def test_generic_powered_off_other_vm_passes(self):
@@ -213,9 +213,9 @@ class SafetyValidationTests(unittest.TestCase):
         self.assertFalse(checks_passed(checks))
 
     def test_snapshot_datastore_copy_names_are_stable_for_multi_disk(self):
-        self.assertEqual(snapshot_copy_stem(1, 1), "DocuSign-snapshot")
-        self.assertEqual(snapshot_copy_stem(1, 2), "DocuSign-disk1-snapshot")
-        self.assertEqual(snapshot_copy_stem(2, 2), "DocuSign-disk2-snapshot")
+        self.assertEqual(snapshot_copy_stem(1, 1), "ExampleVM-snapshot")
+        self.assertEqual(snapshot_copy_stem(1, 2), "ExampleVM-disk1-snapshot")
+        self.assertEqual(snapshot_copy_stem(2, 2), "ExampleVM-disk2-snapshot")
         self.assertEqual(datastore_sibling_path("VM/VM.vmx", "VM.nvram"), "VM/VM.nvram")
 
     def test_snapshot_datastore_copy_handles_multiple_disks(self):
@@ -226,7 +226,7 @@ class SafetyValidationTests(unittest.TestCase):
                 "key": 2001,
                 "capacity_bytes": 10 * 1024**3,
                 "capacity_gb": 10.0,
-                "file_name": "[datastore1] DocuSign/DocuSign_1.vmdk",
+                "file_name": "[datastore1] ExampleVM/ExampleVM_1.vmdk",
                 "datastore": "datastore1",
                 "thin_provisioned": True,
                 "backing_type": "vim.vm.device.VirtualDisk.FlatVer2BackingInfo",
@@ -284,15 +284,15 @@ class SafetyValidationTests(unittest.TestCase):
         extents = [item for item in result["files"] if item.get("vmdk_role") == "extent"]
 
         self.assertEqual([item["name"] for item in descriptors], [
-            "DocuSign-disk1-snapshot.vmdk",
-            "DocuSign-disk2-snapshot.vmdk",
+            "ExampleVM-disk1-snapshot.vmdk",
+            "ExampleVM-disk2-snapshot.vmdk",
         ])
         self.assertEqual([item["disk_index"] for item in descriptors], [1, 2])
         self.assertEqual(len(extents), 2)
         self.assertEqual(len(copied), 2)
         self.assertEqual(result["remote_temporary_copy"]["disk_count"], 2)
         self.assertEqual(len(result["remote_temporary_copy"]["copies"]), 2)
-        self.assertTrue(any(path.endswith("DocuSign-disk2-snapshot-s001.vmdk") for path in deleted))
+        self.assertTrue(any(path.endswith("ExampleVM-disk2-snapshot-s001.vmdk") for path in deleted))
 
     def test_snapshot_datastore_copy_ignores_outer_pyvmomi_exception(self):
         info = base_vm_info(power_state="poweredOn")
@@ -384,7 +384,7 @@ class SafetyValidationTests(unittest.TestCase):
 
         def fake_fallback(**kwargs):
             return {
-                "files": [{"name": "DocuSign-snapshot.vmdk", "bytes": 1, "sha256": "0"}],
+                "files": [{"name": "ExampleVM-snapshot.vmdk", "bytes": 1, "sha256": "0"}],
                 "skipped_device_urls": [],
                 "remote_temporary_copy": {"cleanup_status": "success"},
                 "transfer_method": "snapshot_datastore_copy",
@@ -407,7 +407,7 @@ class SafetyValidationTests(unittest.TestCase):
 
         self.assertEqual(len(aborted), 1)
         self.assertEqual(manifest["transfer_method"], "snapshot_datastore_copy")
-        self.assertEqual(manifest["files"][0]["name"], "DocuSign-snapshot.vmdk")
+        self.assertEqual(manifest["files"][0]["name"], "ExampleVM-snapshot.vmdk")
         self.assertEqual(manifest["snapshot_export_fallback"]["reason"], "missing_removable_media_image")
         self.assertIn("ubuntu-24.04.iso", manifest["snapshot_export_error"])
 
@@ -431,9 +431,9 @@ class SafetyValidationTests(unittest.TestCase):
             )
         )
         config = VSphereConfig(
-            host="example.local",
+            host="example.invalid",
             user="backup",
-            password="secret",
+            password="TEST_PASSWORD",
             output_dir=Path("/tmp"),
             min_free_gb=0.01,
             datastore_copy_stall_timeout_seconds=123,
@@ -448,7 +448,7 @@ class SafetyValidationTests(unittest.TestCase):
                 patch("safe_vsphere_backup.find_datacenter_for_vm", return_value=SimpleNamespace(name="dc1")),
                 patch(
                     "safe_vsphere_backup.read_datastore_text_file",
-                    return_value='# Disk DescriptorFile\nRW 1 SPARSE "DocuSign-snapshot-s001.vmdk"\n',
+                    return_value='# Disk DescriptorFile\nRW 1 SPARSE "ExampleVM-snapshot-s001.vmdk"\n',
                 ),
                 patch("safe_vsphere_backup.wait_for_task_progress", side_effect=fake_wait_for_task_progress),
                 patch("safe_vsphere_backup.delete_datastore_path", side_effect=lambda *args: deleted.append(args[2])),
@@ -469,7 +469,7 @@ class SafetyValidationTests(unittest.TestCase):
         self.assertEqual(getattr(raised.exception, "transfer_method"), "snapshot_datastore_copy")
         remote_copy = getattr(raised.exception, "remote_temporary_copy")
         self.assertEqual(remote_copy["cleanup_status"], "skipped_copy_still_running")
-        self.assertEqual(remote_copy["copies"][0]["source_path"], "[datastore1] DocuSign/DocuSign.vmdk")
+        self.assertEqual(remote_copy["copies"][0]["source_path"], "[datastore1] ExampleVM/ExampleVM.vmdk")
 
     def test_delete_datastore_path_retries_transient_failures(self):
         attempts = []
@@ -700,9 +700,9 @@ class SafetyValidationTests(unittest.TestCase):
             config_file.write_text(
                 "\n".join(
                     [
-                        "VSPHERE_HOST=example.local",
+                        "VSPHERE_HOST=example.invalid",
                         "VSPHERE_USER=backup",
-                        "VSPHERE_PASSWORD=secret",
+                        "VSPHERE_PASSWORD=TEST_PASSWORD",
                         "READ_TIMEOUT_SECONDS=300",
                         "DOWNLOAD_STALL_TIMEOUT_SECONDS=21600",
                     ]
@@ -716,17 +716,17 @@ class SafetyValidationTests(unittest.TestCase):
         self.assertEqual(config.download_stall_timeout_seconds, 21600)
 
     def test_vsphere_endpoint_accepts_host_port_and_url(self):
-        self.assertEqual(split_vsphere_endpoint("vcsa.example.local", "443"), ("vcsa.example.local", 443))
-        self.assertEqual(split_vsphere_endpoint("vcsa.example.local:8443", "443"), ("vcsa.example.local", 8443))
+        self.assertEqual(split_vsphere_endpoint("vcsa.example.invalid", "443"), ("vcsa.example.invalid", 443))
+        self.assertEqual(split_vsphere_endpoint("vcsa.example.invalid:8443", "443"), ("vcsa.example.invalid", 8443))
         self.assertEqual(
-            split_vsphere_endpoint("https://vcsa.example.local:9443/sdk", "443"),
-            ("vcsa.example.local", 9443),
+            split_vsphere_endpoint("https://vcsa.example.invalid:9443/sdk", "443"),
+            ("vcsa.example.invalid", 9443),
         )
 
     def test_interactive_free_space_uses_latest_successful_backup_size(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            backup_dir = root / "DocuSign_20260622_120000_uuid"
+            backup_dir = root / "ExampleVM_20260622_120000_uuid"
             backup_dir.mkdir()
             (backup_dir / "backup_manifest.json").write_text(
                 json.dumps(
@@ -740,9 +740,9 @@ class SafetyValidationTests(unittest.TestCase):
                 encoding="utf-8",
             )
             cfg = VSphereConfig(
-                host="example.local",
+                host="example.invalid",
                 user="backup",
-                password="secret",
+                password="TEST_PASSWORD",
                 output_dir=root,
                 min_free_gb=9999,
             )
@@ -770,9 +770,9 @@ class SafetyValidationTests(unittest.TestCase):
                 encoding="utf-8",
             )
             cfg = VSphereConfig(
-                host="example.local",
+                host="example.invalid",
                 user="backup",
-                password="secret",
+                password="TEST_PASSWORD",
                 output_dir=root,
                 min_free_gb=0.01,
             )
@@ -786,7 +786,7 @@ class SafetyValidationTests(unittest.TestCase):
     def test_interactive_free_space_uses_latest_delta_new_chunk_size(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            backup_dir = root / "DocuSign" / "delta_0002"
+            backup_dir = root / "ExampleVM" / "delta_0002"
             backup_dir.mkdir(parents=True)
             (backup_dir / "backup_manifest.json").write_text(
                 json.dumps(
@@ -802,9 +802,9 @@ class SafetyValidationTests(unittest.TestCase):
                 encoding="utf-8",
             )
             cfg = VSphereConfig(
-                host="example.local",
+                host="example.invalid",
                 user="backup",
-                password="secret",
+                password="TEST_PASSWORD",
                 output_dir=root,
                 min_free_gb=0.01,
             )
@@ -824,9 +824,9 @@ class SafetyValidationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             cfg = VSphereConfig(
-                host="example.local",
+                host="example.invalid",
                 user="backup",
-                password="secret",
+                password="TEST_PASSWORD",
                 output_dir=root,
                 min_free_gb=0.01,
             )
@@ -847,12 +847,12 @@ class SafetyValidationTests(unittest.TestCase):
             validate_datastore_folder_name("Bad/Name")
 
     def test_restore_alternate_folder_names_add_numeric_suffix(self):
-        names = list(alternate_datastore_folder_names("DocuSign_Restore", max_attempts=4))
-        self.assertEqual(names, ["DocuSign_Restore_2", "DocuSign_Restore_3", "DocuSign_Restore_4"])
+        names = list(alternate_datastore_folder_names("ExampleVM_Restore", max_attempts=4))
+        self.assertEqual(names, ["ExampleVM_Restore_2", "ExampleVM_Restore_3", "ExampleVM_Restore_4"])
 
     def test_restore_materialization_uses_backup_volume_by_default(self):
         with tempfile.TemporaryDirectory() as tmp:
-            backup_dir = Path(tmp) / "Backup" / "DocuSign" / "delta_0003"
+            backup_dir = Path(tmp) / "Backup" / "ExampleVM" / "delta_0003"
             with patch.dict("restore_vm_backup.os.environ", {}, clear=True):
                 self.assertEqual(
                     restore_materialization_parent(backup_dir),
@@ -860,7 +860,7 @@ class SafetyValidationTests(unittest.TestCase):
                 )
 
     def test_restore_materialization_honors_explicit_workspace(self):
-        backup_dir = Path("/srv/Backup/DocuSign/delta_0003")
+        backup_dir = Path("/var/backups/vsphere/ExampleVM/delta_0003")
         with patch.dict(
             "restore_vm_backup.os.environ",
             {"VSPHERE_RESTORE_TMPDIR": "/var/tmp/vsphere-restore"},
@@ -875,26 +875,26 @@ class SafetyValidationTests(unittest.TestCase):
         descriptor = '\n'.join(
             [
                 '# Disk DescriptorFile',
-                'RW 52428800 SPARSE "DocuSign-snapshot-s001.vmdk"',
-                'changeTrackPath="DocuSign-snapshot-ctk.vmdk"',
+                'RW 52428800 SPARSE "ExampleVM-snapshot-s001.vmdk"',
+                'changeTrackPath="ExampleVM-snapshot-ctk.vmdk"',
             ]
         )
-        self.assertEqual(parse_vmdk_extent_files_from_text(descriptor), ["DocuSign-snapshot-s001.vmdk"])
-        self.assertEqual(parse_vmdk_change_track_files(descriptor), ["DocuSign-snapshot-ctk.vmdk"])
+        self.assertEqual(parse_vmdk_extent_files_from_text(descriptor), ["ExampleVM-snapshot-s001.vmdk"])
+        self.assertEqual(parse_vmdk_change_track_files(descriptor), ["ExampleVM-snapshot-ctk.vmdk"])
 
     def test_restore_import_descriptor_strips_change_tracking(self):
         descriptor = '\n'.join(
             [
                 '# Disk DescriptorFile',
                 'version=3',
-                'RW 52428800 SPARSE "DocuSign-snapshot-s001.vmdk"',
+                'RW 52428800 SPARSE "ExampleVM-snapshot-s001.vmdk"',
                 '# Change Tracking File',
-                'changeTrackPath="DocuSign-snapshot-ctk.vmdk"',
+                'changeTrackPath="ExampleVM-snapshot-ctk.vmdk"',
                 'ddb.adapterType = "lsilogic"',
             ]
         )
         sanitized = sanitize_vmdk_descriptor_for_import(descriptor)
-        self.assertEqual(parse_vmdk_extent_files_from_text(sanitized), ["DocuSign-snapshot-s001.vmdk"])
+        self.assertEqual(parse_vmdk_extent_files_from_text(sanitized), ["ExampleVM-snapshot-s001.vmdk"])
         self.assertEqual(parse_vmdk_change_track_files(sanitized), [])
         self.assertIn('ddb.adapterType = "lsilogic"', sanitized)
 
@@ -903,15 +903,15 @@ class SafetyValidationTests(unittest.TestCase):
             backup_dir=Path("/tmp"),
             manifest={},
             vm_info={},
-            descriptor_name="DocuSign_Restore.vmdk",
+            descriptor_name="ExampleVM_Restore.vmdk",
             extent_names=[],
             ctk_names=[],
-            upload_files=["DocuSign_Restore.vmdk"],
+            upload_files=["ExampleVM_Restore.vmdk"],
             ovf={},
         )
         self.assertEqual(
-            imported_disk_descriptor_name("DocuSign_Restore", artifacts),
-            "DocuSign_Restore-imported.vmdk",
+            imported_disk_descriptor_name("ExampleVM_Restore", artifacts),
+            "ExampleVM_Restore-imported.vmdk",
         )
 
     def test_restore_import_adapter_maps_pvscsi_to_esxi_import_value(self):
@@ -930,7 +930,7 @@ class SafetyValidationTests(unittest.TestCase):
     def test_restore_point_discovery_lists_versions_newest_first(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            vm_dir = root / "DocuSign"
+            vm_dir = root / "ExampleVM"
             full = vm_dir / "full_0001"
             delta = vm_dir / "delta_0002"
             failed = vm_dir / "delta_0003.failed"
@@ -981,12 +981,12 @@ class SafetyValidationTests(unittest.TestCase):
             self.assertIn("2026-06-26 12:37:24 UTC", table)
             self.assertIn("delta_0002", table)
             self.assertIn("Gefundene VMs: 1", vm_table)
-            self.assertIn("DocuSign", vm_table)
+            self.assertIn("ExampleVM", vm_table)
             self.assertIn("Versionen", vm_table)
 
     def test_restore_point_from_legacy_manifest_uses_directory_name(self):
         with tempfile.TemporaryDirectory() as tmp:
-            backup_dir = Path(tmp) / "DocuSign_20260624_063208_uuid"
+            backup_dir = Path(tmp) / "ExampleVM_20260624_063208_uuid"
             backup_dir.mkdir()
             manifest_file = backup_dir / "backup_manifest.json"
             manifest_file.write_text(
@@ -1004,13 +1004,13 @@ class SafetyValidationTests(unittest.TestCase):
             point = restore_point_from_manifest(manifest_file)
 
             self.assertIsNotNone(point)
-            self.assertEqual(point.run_name, "DocuSign_20260624_063208_uuid")
+            self.assertEqual(point.run_name, "ExampleVM_20260624_063208_uuid")
             self.assertEqual(point.kind, "full")
 
     def test_existing_backup_enables_delta_choice(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            backup_dir = root / "DocuSign_20260622_120000_uuid"
+            backup_dir = root / "ExampleVM_20260622_120000_uuid"
             backup_dir.mkdir()
             (backup_dir / "backup_manifest.json").write_text(
                 json.dumps(
@@ -1041,9 +1041,9 @@ class SafetyValidationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             cfg = VSphereConfig(
-                host="example.local",
+                host="example.invalid",
                 user="backup",
-                password="secret",
+                password="TEST_PASSWORD",
                 output_dir=root,
                 min_free_gb=0.01,
             )
@@ -1075,13 +1075,13 @@ class SafetyValidationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             cfg = VSphereConfig(
-                host="example.local",
+                host="example.invalid",
                 user="backup",
-                password="secret",
+                password="TEST_PASSWORD",
                 output_dir=root,
                 min_free_gb=0.01,
             )
-            vm_dir = root / "DocuSign"
+            vm_dir = root / "ExampleVM"
             full = vm_dir / "full_0001"
             full.mkdir(parents=True)
             (full / "backup_manifest.json").write_text(
@@ -1107,13 +1107,13 @@ class SafetyValidationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             cfg = VSphereConfig(
-                host="example.local",
+                host="example.invalid",
                 user="backup",
-                password="secret",
+                password="TEST_PASSWORD",
                 output_dir=root,
                 min_free_gb=0.01,
             )
-            vm_dir = root / "DocuSign"
+            vm_dir = root / "ExampleVM"
             full = vm_dir / "full_0001"
             full.mkdir(parents=True)
             (full / "backup_manifest.json").write_text(
@@ -1139,13 +1139,13 @@ class SafetyValidationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             cfg = VSphereConfig(
-                host="example.local",
+                host="example.invalid",
                 user="backup",
-                password="secret",
+                password="TEST_PASSWORD",
                 output_dir=root,
                 min_free_gb=0.01,
             )
-            vm_dir = root / "DocuSign"
+            vm_dir = root / "ExampleVM"
             full = vm_dir / "full_0001"
             stale = vm_dir / "delta_0006.inprogress"
             full.mkdir(parents=True)
@@ -1186,7 +1186,7 @@ class SafetyValidationTests(unittest.TestCase):
                 "\n".join(
                     [
                         "# name=Ignored moref=vm-1",
-                        "DocuSign",
+                        "ExampleVM",
                         "name='Other VM' moref='vm-456' instance_uuid='uuid-2'",
                     ]
                 ),
@@ -1196,7 +1196,7 @@ class SafetyValidationTests(unittest.TestCase):
             entries = parse_selection_file(path)
 
         self.assertEqual(len(entries), 2)
-        self.assertEqual(entries[0]["name"], "DocuSign")
+        self.assertEqual(entries[0]["name"], "ExampleVM")
         self.assertEqual(entries[1]["name"], "Other VM")
         self.assertEqual(entries[1]["moref"], "vm-456")
 
@@ -1210,20 +1210,20 @@ class SafetyValidationTests(unittest.TestCase):
 
     def test_resolve_selection_entries_validates_identity_fields(self):
         records = [
-            (object(), base_vm_info(name="DocuSign", moref="vm-123", instance_uuid="uuid-1")),
+            (object(), base_vm_info(name="ExampleVM", moref="vm-123", instance_uuid="uuid-1")),
             (object(), base_vm_info(name="Other VM", moref="vm-456", instance_uuid="uuid-2")),
         ]
 
         resolved, errors = resolve_selection_entries(
             records,
-            [{"line": 1, "name": "DocuSign", "moref": "vm-123", "instance_uuid": "uuid-1"}],
+            [{"line": 1, "name": "ExampleVM", "moref": "vm-123", "instance_uuid": "uuid-1"}],
         )
 
         self.assertFalse(errors)
-        self.assertEqual(resolved[0][1]["name"], "DocuSign")
+        self.assertEqual(resolved[0][1]["name"], "ExampleVM")
 
     def test_resolve_selection_entries_blocks_renamed_uuid_match(self):
-        records = [(object(), base_vm_info(name="DocuSign", moref="vm-123", instance_uuid="uuid-1"))]
+        records = [(object(), base_vm_info(name="ExampleVM", moref="vm-123", instance_uuid="uuid-1"))]
 
         resolved, errors = resolve_selection_entries(
             records,
@@ -1253,7 +1253,7 @@ class SafetyValidationTests(unittest.TestCase):
             written = write_selection_file(path, records)
 
             self.assertEqual(written, path.resolve())
-            self.assertIn("# name=DocuSign", path.read_text(encoding="utf-8"))
+            self.assertIn("# name=ExampleVM", path.read_text(encoding="utf-8"))
             with self.assertRaises(FileExistsError):
                 write_selection_file(path, records)
 
@@ -1276,9 +1276,9 @@ class SafetyValidationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             cfg = VSphereConfig(
-                host="example.local",
+                host="example.invalid",
                 user="backup",
-                password="secret",
+                password="TEST_PASSWORD",
                 output_dir=root,
                 min_free_gb=0.01,
             )
@@ -1618,7 +1618,7 @@ class DeltaStorageTests(unittest.TestCase):
     def test_delta_pack_reuses_full_0001_as_base_file(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            vm_dir = root / "DocuSign"
+            vm_dir = root / "ExampleVM"
             full = self.write_backup_with_extent(vm_dir, "full_0001", b"A" * 8 + b"B" * 8)
             delta = self.write_backup_with_extent(vm_dir, "delta_0002", b"A" * 8 + b"C" * 8)
             manifest = json.loads((delta / "backup_manifest.json").read_text(encoding="utf-8"))

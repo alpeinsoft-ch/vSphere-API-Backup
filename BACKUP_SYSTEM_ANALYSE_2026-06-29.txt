@@ -1,8 +1,10 @@
-vSphere-API-Bakup - Systemanalyse
+vSphere-API-Backup - Systemanalyse
+
+English version: BACKUP_SYSTEM_ANALYSE_2026-06-29.en.txt
 
 Stand dieses neuen Ordners:
 
-1. Die Vorlage docsign_esxi_api_backup wurde ohne alte Backups, Logs,
+1. Die Vorlage upstream_vsphere_backup_template wurde ohne alte Backups, Logs,
    Python-Cache und alte lokale Config kopiert.
 2. Die Kernlogik wurde auf safe_vsphere_backup.py und backup_vsphere.py
    umgestellt.
