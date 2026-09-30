@@ -1,10 +1,7 @@
 vSphere-API-Backup - Systemanalyse
 
-<<<<<<< HEAD
 English version: BACKUP_SYSTEM_ANALYSE_2026-06-29.en.txt
 
-=======
->>>>>>> Alpein/main
 Stand dieses neuen Ordners:
 
 1. Die Vorlage upstream_vsphere_backup_template wurde ohne alte Backups, Logs,

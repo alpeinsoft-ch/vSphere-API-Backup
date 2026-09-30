@@ -1,6 +1,5 @@
 # Analyse und Anleitung: vSphere API Backup
 
-<<<<<<< HEAD
 [English version](ANALYSE_UND_ANLEITUNG.en.md)
 
 > **Entwickelt von:** Alpein Software Swiss AG<br>
@@ -9,13 +8,10 @@
 > **Achtung:** WIPCODING-Inhalt
 
 Stand: 2026-09-17 UTC
-=======
-Stand: 2026-08-31 UTC
->>>>>>> Alpein/main
 
 Dieses Dokument beschreibt den aktuellen Zustand des Projekts
 `vSphere-API-Backup`, den technischen Aufbau, den sicheren Betrieb und den
-GitLab-Erstimport.
+GitHub-Erstimport.
 
 ## 1. Kurzfazit
 
@@ -31,13 +27,9 @@ python3 -m py_compile *.py tests/test_safety.py
 python3 -m unittest discover -s tests -v
 ```
 
-<<<<<<< HEAD
 Ergebnis am 2026-09-17: 71 Tests bestanden.
-=======
-Ergebnis am 2026-08-31: 69 Tests bestanden.
->>>>>>> Alpein/main
 
-Produktive Runtime-Daten gehoeren nicht ins GitLab-Repository:
+Produktive Runtime-Daten gehoeren nicht ins GitHub-Repository:
 
 - `credentials.env`
 - `/var/backups/vsphere/` (configured backup filesystem)
@@ -361,7 +353,7 @@ betroffenen Ketten laufen.
 Logs und Backups sind Betriebsdaten. Sie werden nicht versioniert und muessen
 ueber Backup-Retention, Monitoring oder externe Logrotation verwaltet werden.
 
-## 12. GitLab-Erstimport
+## 12. GitHub-Erstimport
 
 Empfohlener Projektname:
 
@@ -378,7 +370,7 @@ vsphere-api-backup
 Remote:
 
 ```text
-https://git2.securium.ch/infrastructure/backup.git
+https://github.com/alpeinsoft-ch/vSphere-API-Backup.git
 ```
 
 Vor dem ersten Commit pruefen:
@@ -396,14 +388,14 @@ git branch -M main
 git add .
 git status --short
 git commit -m "Initial import of vSphere API backup system"
-git remote add origin https://git2.securium.ch/infrastructure/backup.git
+git remote add origin https://github.com/alpeinsoft-ch/vSphere-API-Backup.git
 git push -u origin main
 ```
 
 Nach dem Clone auf einem anderen System:
 
 ```bash
-git clone https://git2.securium.ch/infrastructure/backup.git
+git clone https://github.com/alpeinsoft-ch/vSphere-API-Backup.git
 cd vsphere-api-backup
 # Debian/Ubuntu minimal: bei fehlendem ensurepip vorher python3-venv installieren.
 python3 -m venv .venv

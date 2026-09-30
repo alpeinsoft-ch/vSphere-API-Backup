@@ -14,7 +14,7 @@ It follows the workflow and security model of the
 `upstream_vsphere_backup_template`, but is adapted for vSphere/vCenter
 configuration and the vCenter REST inventory.
 
-A complete technical inventory, operations guide, and GitLab initial-import
+A complete technical inventory, operations guide, and GitHub initial-import
 guide are available in the following documents:
 
 - [Analysis and guide in English](docs/ANALYSE_UND_ANLEITUNG.en.md)
@@ -51,7 +51,7 @@ Official reference: Broadcom Developer Portal, vSphere Automation API.
 ## Setup
 
 ```bash
-git clone https://git2.securium.ch/infrastructure/backup.git
+git clone https://github.com/alpeinsoft-ch/vSphere-API-Backup.git
 cd vsphere-api-backup
 python3 -m venv .venv
 . .venv/bin/activate

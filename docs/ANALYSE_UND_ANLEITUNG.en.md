@@ -10,7 +10,7 @@
 Status: 2026-09-17 UTC
 
 This document describes the current state of the project
-`vSphere-API-Backup`, its technical structure, safe operation, and the GitLab
+`vSphere-API-Backup`, its technical structure, safe operation, and the GitHub
 initial import.
 
 ## 1. Summary
@@ -28,7 +28,7 @@ python3 -m unittest discover -s tests -v
 
 Validated result on 2026-09-17: 71 tests passed.
 
-Production runtime data does not belong in the GitLab repository:
+Production runtime data does not belong in the GitHub repository:
 
 - `credentials.env`
 - `/var/backups/vsphere/` (configured backup filesystem)
@@ -343,7 +343,7 @@ or at least `verify` for the affected chains.
 Logs and backups are operational data. They are not versioned and must be
 managed through backup retention, monitoring, or external log rotation.
 
-## 12. GitLab initial import
+## 12. GitHub initial import
 
 Recommended project name:
 
@@ -360,7 +360,7 @@ vsphere-api-backup
 Remote:
 
 ```text
-https://git2.securium.ch/infrastructure/backup.git
+https://github.com/alpeinsoft-ch/vSphere-API-Backup.git
 ```
 
 Check before the first commit:
@@ -378,14 +378,14 @@ git branch -M main
 git add .
 git status --short
 git commit -m "Initial import of vSphere API backup system"
-git remote add origin https://git2.securium.ch/infrastructure/backup.git
+git remote add origin https://github.com/alpeinsoft-ch/vSphere-API-Backup.git
 git push -u origin main
 ```
 
 After cloning on another system:
 
 ```bash
-git clone https://git2.securium.ch/infrastructure/backup.git
+git clone https://github.com/alpeinsoft-ch/vSphere-API-Backup.git
 cd vsphere-api-backup
 # Debian/Ubuntu minimal: install python3-venv first if ensurepip is missing.
 python3 -m venv .venv

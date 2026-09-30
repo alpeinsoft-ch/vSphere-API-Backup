@@ -2,7 +2,16 @@
 credentials.env
 config.env
 .env
+*.env
 *.env.local
+
+# Private keys, certificates, and credential containers
+*.pem
+*.key
+*.crt
+*.cer
+*.p12
+*.pfx
 
 # Runtime backup data and generated state
 backups/

@@ -1,10 +1,7 @@
 Schrittprotokoll vSphere-API-Backup
 
-<<<<<<< HEAD
 English version: SCHRITTPROTOKOLL.en.txt
 
-=======
->>>>>>> Alpein/main
 1. Zielordner erstellt:
    <PROJECT_ROOT>
 
