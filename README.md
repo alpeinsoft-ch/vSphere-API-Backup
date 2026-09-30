@@ -1,5 +1,6 @@
 # vSphere API Backup
 
+<<<<<<< HEAD
 [English version](README.en.md)
 
 > **Entwickelt von:** Alpein Software Swiss AG<br>
@@ -7,6 +8,9 @@
 > **Unterstützt von:** KI<br>
 > **Achtung:** WIPCODING-Inhalt
 
+=======
+Vor jedem Backup zuerst lesen: [`VOR_BACKUP_LESEN.md`](../VOR_BACKUP_LESEN.md).
+>>>>>>> Alpein/main
 Der normale Startbefehl bleibt exakt `./start_select_vm_backup.sh`.
 
 Dieses Verzeichnis enthaelt ein neues, getrenntes vSphere/vCenter-Backup-System.
@@ -14,6 +18,7 @@ Es uebernimmt Ablauf und Sicherheitsmodell der Vorlage `upstream_vsphere_backup_
 ist aber auf vSphere/vCenter-Konfiguration und vCenter-REST-Inventory
 umgestellt.
 
+<<<<<<< HEAD
 Eine vollständige technische Bestandsaufnahme, Betriebsanleitung und
 GitLab-Erstimport-Anleitung liegt in den folgenden Dokumenten:
 
@@ -21,6 +26,11 @@ GitLab-Erstimport-Anleitung liegt in den folgenden Dokumenten:
 - [Analysis and guide in English](docs/ANALYSE_UND_ANLEITUNG.en.md)
 - [Runbook auf Deutsch](RUNBOOK.md)
 - [Runbook in English](RUNBOOK.en.md)
+=======
+Eine vollstaendige technische Bestandsaufnahme, Betriebsanleitung und
+GitLab-Erstimport-Anleitung liegt unter
+[`docs/ANALYSE_UND_ANLEITUNG.md`](docs/ANALYSE_UND_ANLEITUNG.md).
+>>>>>>> Alpein/main
 
 ## API-Ansteuerung
 

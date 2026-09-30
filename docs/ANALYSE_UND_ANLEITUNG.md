@@ -1,5 +1,6 @@
 # Analyse und Anleitung: vSphere API Backup
 
+<<<<<<< HEAD
 [English version](ANALYSE_UND_ANLEITUNG.en.md)
 
 > **Entwickelt von:** Alpein Software Swiss AG<br>
@@ -8,6 +9,9 @@
 > **Achtung:** WIPCODING-Inhalt
 
 Stand: 2026-09-17 UTC
+=======
+Stand: 2026-08-31 UTC
+>>>>>>> Alpein/main
 
 Dieses Dokument beschreibt den aktuellen Zustand des Projekts
 `vSphere-API-Backup`, den technischen Aufbau, den sicheren Betrieb und den
@@ -27,7 +31,11 @@ python3 -m py_compile *.py tests/test_safety.py
 python3 -m unittest discover -s tests -v
 ```
 
+<<<<<<< HEAD
 Ergebnis am 2026-09-17: 71 Tests bestanden.
+=======
+Ergebnis am 2026-08-31: 69 Tests bestanden.
+>>>>>>> Alpein/main
 
 Produktive Runtime-Daten gehoeren nicht ins GitLab-Repository:
 

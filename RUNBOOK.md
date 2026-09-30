@@ -1,5 +1,6 @@
 # Runbook
 
+<<<<<<< HEAD
 [English version](RUNBOOK.en.md)
 
 > **Entwickelt von:** Alpein Software Swiss AG<br>
@@ -7,6 +8,9 @@
 > **Unterstützt von:** KI<br>
 > **Achtung:** WIPCODING-Inhalt
 
+=======
+Vor jedem Lauf zuerst [`VOR_BACKUP_LESEN.md`](../VOR_BACKUP_LESEN.md) lesen.
+>>>>>>> Alpein/main
 Der normale Backup-Start erfolgt ausschließlich mit:
 
 ```bash

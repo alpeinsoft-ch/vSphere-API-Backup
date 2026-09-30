@@ -1,5 +1,8 @@
+<<<<<<< HEAD
 English version: Sart Parameter.en.txt
 
+=======
+>>>>>>> Alpein/main
 Inventory:
 python3 inventory_discovery.py --show-all
 

@@ -1,5 +1,6 @@
 # Analyse und Konzept
 
+<<<<<<< HEAD
 [English version](ANALYSE_UND_KONZEPT.en.md)
 
 > **Entwickelt von:** Alpein Software Swiss AG<br>
@@ -7,6 +8,8 @@
 > **Unterstützt von:** KI<br>
 > **Achtung:** WIPCODING-Inhalt
 
+=======
+>>>>>>> Alpein/main
 ## Ausgangspunkt
 
 Die Vorlage `upstream_vsphere_backup_template` wurde als konservatives VM-Backup-System
